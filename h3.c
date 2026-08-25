@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 static char h3_global_error[512];
 
@@ -571,6 +572,10 @@ static int h3_valid_params(h3_ctx *ctx, const h3_params *params) {
         h3_set_error(ctx, "denoising preview requires a frame callback");
         return 0;
     }
+    if (params->preview_interval_ms < 0) {
+        h3_set_error(ctx, "preview interval must be non-negative");
+        return 0;
+    }
     if (params->core_reuse > 1 && params->denoise_reuse > 1) {
         h3_set_error(ctx, "core reuse and denoiser reuse cannot be combined");
         return 0;
@@ -743,8 +748,18 @@ typedef struct {
     int output_frames;
     int output_width;
     int output_height;
+    int interval_ms;
+    int emitted;
+    double last_emit_s;
+    double last_cost_s;
     int failed;
 } h3_live_preview;
+
+static double h3_monotonic_seconds(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
+}
 
 static int h3_deliver_denoise_preview(int completed_steps, int total_steps,
                                       const float *video_latent,
@@ -764,6 +779,17 @@ static int h3_deliver_denoise_preview(int completed_steps, int total_steps,
                      "invalid denoising preview latent size");
         preview->failed = 1;
         return 1;
+    }
+    /* The chunk-wide VAE decode below is far heavier than a sampler step, so
+     * a throttled caller gets the first preview immediately, then waits out
+     * both the requested floor and nine times the last decode's cost — the
+     * decoding never claims more than about a tenth of the wall clock. */
+    double started = h3_monotonic_seconds();
+    if (preview->interval_ms > 0 && preview->emitted) {
+        double gap = started - preview->last_emit_s;
+        if (gap < (double)preview->interval_ms / 1000.0 ||
+            gap < preview->last_cost_s * 9.0)
+            return 0;
     }
     char detail[512];
     h3_video_frames decoded;
@@ -818,6 +844,9 @@ static int h3_deliver_denoise_preview(int completed_steps, int total_steps,
         preview->failed = 1;
         return 1;
     }
+    preview->last_emit_s = h3_monotonic_seconds();
+    preview->last_cost_s = preview->last_emit_s - started;
+    preview->emitted = 1;
     return 0;
 }
 
@@ -1556,6 +1585,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         live_preview.output_frames = temporal.frame_count;
         live_preview.output_width = params->width;
         live_preview.output_height = params->height;
+        live_preview.interval_ms = params->preview_interval_ms;
         if (progress.cancelled) goto cleanup;
     }
     size_t video_count = h3_dit_video_elements(dit);

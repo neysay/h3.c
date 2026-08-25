@@ -1,5 +1,6 @@
 #include "h3.h"
 #include "h3_cli.h"
+#include "h3_ffmpeg.h"
 #include "h3_host.h"
 #include "h3_terminal.h"
 
@@ -55,6 +56,7 @@ static void usage(const char *program) {
         "      --ref-video-audio VIDEO AUDIO  Append video + soundtrack\n"
         "      --ref-audio PATH    Append an ordered standalone audio clip\n"
         "      --frames-dir PATH  Write generated frames as PPM files\n"
+        "      --preview-dir PATH Write throttled denoise previews as PNGs\n"
         "      --show             Display a frame after every denoising step (M5)\n"
         "      --zoom N           Terminal image zoom (default: 2 for Retina)\n"
         "      --profile          Print per-phase Metal timing and allocation data\n"
@@ -151,6 +153,9 @@ typedef struct {
     int display_failed;
     const char *frames_dir;
     int frame_write_failed;
+    const char *preview_dir;
+    int preview_write_failed;
+    int preview_count;
 } cli_state;
 
 static int cli_progress(const char *phase, int completed, int total,
@@ -202,6 +207,49 @@ static int cli_frame(const h3_frame *frame, void *opaque) {
                         frame->frame_index, state->frames_dir);
         }
     }
+    if (preview && state->preview_dir && !state->preview_write_failed) {
+        /* Denoise previews are progress telemetry for a supervising process,
+         * not deliverables, so they shrink to a 384-pixel edge and a failed
+         * write says so once and goes quiet instead of ending the render. */
+        const uint8_t *rgb = frame->rgb;
+        int width = frame->width;
+        int height = frame->height;
+        int stride = frame->stride;
+        uint8_t *scaled = NULL;
+        int edge = width > height ? width : height;
+        if (edge > 384 && stride == width * 3) {
+            int scaled_width = width * 384 / edge;
+            int scaled_height = height * 384 / edge;
+            if (scaled_width >= 1 && scaled_height >= 1 &&
+                h3_resize_rgb24_high_quality(rgb, 1, width, height,
+                                             scaled_width, scaled_height,
+                                             &scaled)) {
+                rgb = scaled;
+                width = scaled_width;
+                height = scaled_height;
+                stride = scaled_width * 3;
+            }
+        }
+        char path[1024];
+        char detail[256] = "preview path is too long";
+        int length = snprintf(path, sizeof(path), "%s/preview-%03d.png",
+                              state->preview_dir, state->preview_count);
+        int written = length > 0 && (size_t)length < sizeof(path) &&
+            h3_ffmpeg_write_still_rgb24(path, rgb, width, height, stride,
+                                        detail, sizeof(detail));
+        free(scaled);
+        if (state->active) {
+            fputc('\n', stderr);
+            state->active = 0;
+        }
+        if (written) {
+            state->preview_count++;
+            fprintf(stderr, "h3: preview %s\n", path);
+        } else {
+            state->preview_write_failed = 1;
+            fprintf(stderr, "h3: denoise previews disabled: %s\n", detail);
+        }
+    }
     if (state->frame_write_failed) return 1;
     if (state->display_failed || state->terminal == H3_TERM_NONE) return 0;
     if (state->active) {
@@ -250,7 +298,7 @@ int main(int argc, char **argv) {
            OPT_SEED,
            OPT_FIRST, OPT_LAST, OPT_REF_IMAGE, OPT_REF_IMAGE_SIZE,
            OPT_REF_VIDEO, OPT_REF_SILENT_VIDEO, OPT_REF_VIDEO_AUDIO,
-           OPT_REF_AUDIO, OPT_FRAMES_DIR, OPT_SHOW, OPT_ZOOM,
+           OPT_REF_AUDIO, OPT_FRAMES_DIR, OPT_PREVIEW_DIR, OPT_SHOW, OPT_ZOOM,
            OPT_PROFILE, OPT_INFO };
     static const struct option options[] = {
         {"model-dir", required_argument, NULL, 'd'},
@@ -300,6 +348,7 @@ int main(int argc, char **argv) {
         {"ref-video-audio", required_argument, NULL, OPT_REF_VIDEO_AUDIO},
         {"ref-audio", required_argument, NULL, OPT_REF_AUDIO},
         {"frames-dir", required_argument, NULL, OPT_FRAMES_DIR},
+        {"preview-dir", required_argument, NULL, OPT_PREVIEW_DIR},
         {"show", no_argument, NULL, OPT_SHOW},
         {"zoom", required_argument, NULL, OPT_ZOOM},
         {"profile", no_argument, NULL, OPT_PROFILE},
@@ -313,7 +362,7 @@ int main(int argc, char **argv) {
     h3_params params = H3_PARAMS_DEFAULT;
     h3_reference references[12];
     size_t reference_count = 0;
-    cli_state cli = {{0}, 0, -1, -1, H3_TERM_NONE, 0, NULL, 0};
+    cli_state cli = {{0}, 0, -1, -1, H3_TERM_NONE, 0, NULL, 0, NULL, 0, 0};
     int show = 0;
     int profile = 0;
     int info = 0;
@@ -452,6 +501,7 @@ int main(int argc, char **argv) {
                 break;
             }
             case OPT_FRAMES_DIR: cli.frames_dir = optarg; break;
+            case OPT_PREVIEW_DIR: cli.preview_dir = optarg; break;
             case OPT_SHOW: show = 1; break;
             case OPT_ZOOM:
                 if (!h3_terminal_set_zoom(parse_int(optarg, "zoom"))) {
@@ -486,6 +536,12 @@ int main(int argc, char **argv) {
                 cli.frames_dir, strerror(errno));
         return 1;
     }
+    if (cli.preview_dir && mkdir(cli.preview_dir, 0755) != 0 &&
+        errno != EEXIST) {
+        fprintf(stderr, "h3: cannot create preview directory %s: %s\n",
+                cli.preview_dir, strerror(errno));
+        return 1;
+    }
     if (profile) setenv("H3_PROFILE", "1", 1);
     h3_ctx *ctx = h3_load_dir(model_dir);
     if (!ctx) {
@@ -498,6 +554,14 @@ int main(int argc, char **argv) {
         params.on_progress = cli_progress;
         params.callback_opaque = &cli;
         if (cli.frames_dir) params.on_frame = cli_frame;
+        if (cli.preview_dir) {
+            /* Unlike --show, the file sink needs no graphics terminal, and it
+             * throttles: previews go to a supervisor reading lines off a PTY,
+             * where per-step decoding would tax the sampler for nothing. */
+            params.on_frame = cli_frame;
+            params.preview_denoise = 1;
+            params.preview_interval_ms = 2500;
+        }
         if (show) {
             cli.terminal = h3_terminal_detect();
             if (cli.terminal == H3_TERM_NONE) {

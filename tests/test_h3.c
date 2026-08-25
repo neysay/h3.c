@@ -257,9 +257,11 @@ static void test_safetensors(void) {
     char path[] = "/tmp/h3_safetensors_XXXXXX";
     int descriptor = mkstemp(path);
     CHECK(descriptor >= 0);
+    /* Space-padded so the data section starts 8-byte aligned, the same
+     * padding real safetensors writers emit and the loader now enforces. */
     const char header_json[] =
         "{\"x\":{\"dtype\":\"F32\",\"shape\":[2,3],\"data_offsets\":[0,24]},"
-        "\"scalar\":{\"dtype\":\"BF16\",\"shape\":[],\"data_offsets\":[24,26]}}";
+        "\"scalar\":{\"dtype\":\"BF16\",\"shape\":[],\"data_offsets\":[24,26]}}   ";
     uint64_t length = sizeof(header_json) - 1;
     unsigned char prefix[8];
     for (unsigned index = 0; index < 8; index++) prefix[index] = (unsigned char)(length >> (8 * index));

@@ -38,6 +38,12 @@ int h3_ffmpeg_write_rgb24(const char *path, const uint8_t *frames,
                           int frame_count, int width, int height, int fps,
                           char *error, size_t error_size);
 
+/* Encode one RGB24 frame as a still image whose container follows the path's
+ * extension. Stride may exceed width * 3 for row-padded sources. */
+int h3_ffmpeg_write_still_rgb24(const char *path, const uint8_t *rgb,
+                                int width, int height, int stride,
+                                char *error, size_t error_size);
+
 /* Encode RGB24 video and channel-major F32 PCM through two concurrent pipes.
  * No intermediate uncompressed media file is created. */
 int h3_ffmpeg_write_av_rgb24_f32(const char *path, const uint8_t *frames,
