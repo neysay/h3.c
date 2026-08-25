@@ -125,7 +125,7 @@ typedef struct {
     int preview_denoise;
     /* Minimum milliseconds between delivered previews once the first is out.
      * Zero delivers every step. A non-zero floor also bounds preview decoding
-     * to roughly a tenth of the denoising wall clock, so slow canvases skip
+     * to roughly a quarter of the denoising wall clock, so slow canvases skip
      * steps instead of stalling the sampler. */
     int preview_interval_ms;
     h3_frame_callback on_frame;

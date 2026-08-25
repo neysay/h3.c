@@ -2650,10 +2650,13 @@ static int denoise_euler_gpu(h3_dit *dit, float *video_latent,
 
     float *video_rows = malloc(video_count * sizeof(*video_rows));
     float *audio_rows = malloc(audio_count * sizeof(*audio_rows));
-    if (!video_rows || !audio_rows) {
+    uint16_t *preview_velocity = preview
+        ? malloc(video_count * sizeof(*preview_velocity)) : NULL;
+    if (!video_rows || !audio_rows || (preview && !preview_velocity)) {
         fail(error, error_size, "out of memory packing GPU Euler latents");
         free(video_rows);
         free(audio_rows);
+        free(preview_velocity);
         return 0;
     }
     int ok = h3_dit_patchify_video(video_latent, VIDEO_CHANNELS,
@@ -2740,9 +2743,28 @@ static int denoise_euler_gpu(h3_dit *dit, float *video_latent,
             }
         }
         if (ok && preview) {
+            /* The in-flight latent still carries sigma_next worth of noise,
+             * so decoding it directly previews mostly noise until the final
+             * steps. Extending this step's velocity to sigma zero gives the
+             * model's current clean estimate (x0 = x + sigma_next * v),
+             * recognizable from the earliest steps. */
+            float sigma_next = dit->sigmas.video[step + 1];
             ok = h3_gpu_tensor_read_f32_range(
-                     dit->video_input, video_offset, video_rows, video_count) &&
-                 h3_dit_unpatchify_video(
+                     dit->video_input, video_offset, video_rows, video_count);
+            if (ok && sigma_next > 0.0f) {
+                ok = h3_gpu_tensor_read_bf16(dit->video_output_bf16,
+                                             preview_velocity, video_count);
+                if (ok) {
+                    for (size_t index = 0; index < video_count; index++) {
+                        uint32_t bits =
+                            (uint32_t)preview_velocity[index] << 16;
+                        float velocity;
+                        memcpy(&velocity, &bits, sizeof(velocity));
+                        video_rows[index] += sigma_next * velocity;
+                    }
+                }
+            }
+            if (ok) ok = h3_dit_unpatchify_video(
                      video_rows, VIDEO_CHANNELS, dit->latent_t, dit->latent_h,
                      dit->latent_w, video_latent,
                      h3_dit_video_elements(dit));
@@ -2778,6 +2800,7 @@ static int denoise_euler_gpu(h3_dit *dit, float *video_latent,
         fail(error, error_size, "cannot unpack GPU Euler latents");
     free(video_rows);
     free(audio_rows);
+    free(preview_velocity);
     if (ok) report(progress, progress_opaque, "denoise", dit->sigmas.steps,
                    dit->sigmas.steps);
     h3_gpu_profile_mark(dit->gpu, "GPU Euler denoise");
@@ -2903,7 +2926,9 @@ int h3_dit_denoise_euler_preview(
         ? malloc(audio_count * sizeof(*last_audio)) : NULL;
     float *previous_audio = reuse_interval > 1
         ? malloc(audio_count * sizeof(*previous_audio)) : NULL;
-    if (!video_velocity || !audio_velocity ||
+    float *preview_latent = preview
+        ? malloc(video_count * sizeof(*preview_latent)) : NULL;
+    if (!video_velocity || !audio_velocity || (preview && !preview_latent) ||
         (reuse_interval > 1 &&
          (!last_video || !previous_video || !last_audio || !previous_audio))) {
         fail(error, error_size, "out of memory allocating Euler velocities");
@@ -2913,6 +2938,7 @@ int h3_dit_denoise_euler_preview(
         free(previous_video);
         free(last_audio);
         free(previous_audio);
+        free(preview_latent);
         return 0;
     }
     int ok = 1;
@@ -2963,12 +2989,23 @@ int h3_dit_denoise_euler_preview(
             if (!ok) fail(error, error_size,
                           "Euler solver rejected step %d", step);
         }
-        if (ok && preview &&
-            preview(step + 1, dit->sigmas.steps, video_latent, video_count,
-                    preview_opaque)) {
-            fail(error, error_size, "denoising preview stopped at step %d",
-                 step + 1);
-            ok = 0;
+        if (ok && preview) {
+            /* Preview the model's clean estimate (x0 = x + sigma_next * v),
+             * not the still-noisy in-flight latent -- see the GPU sampler. */
+            const float *shown = video_latent;
+            float sigma_next = dit->sigmas.video[step + 1];
+            if (sigma_next > 0.0f) {
+                for (size_t index = 0; index < video_count; index++)
+                    preview_latent[index] = video_latent[index] +
+                                            sigma_next * video_velocity[index];
+                shown = preview_latent;
+            }
+            if (preview(step + 1, dit->sigmas.steps, shown, video_count,
+                        preview_opaque)) {
+                fail(error, error_size, "denoising preview stopped at step %d",
+                     step + 1);
+                ok = 0;
+            }
         }
         if (ok) report(progress, progress_opaque, "denoise", step + 1,
                        dit->sigmas.steps);
@@ -2979,6 +3016,7 @@ int h3_dit_denoise_euler_preview(
     free(previous_video);
     free(last_audio);
     free(previous_audio);
+    free(preview_latent);
     h3_gpu_profile_mark(dit->gpu, "Euler denoise");
     return ok;
 }

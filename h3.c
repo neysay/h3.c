@@ -782,13 +782,16 @@ static int h3_deliver_denoise_preview(int completed_steps, int total_steps,
     }
     /* The chunk-wide VAE decode below is far heavier than a sampler step, so
      * a throttled caller gets the first preview immediately, then waits out
-     * both the requested floor and nine times the last decode's cost — the
-     * decoding never claims more than about a tenth of the wall clock. */
+     * both the requested floor and three times the last decode's cost — the
+     * decoding claims at most about a quarter of the wall clock. (A stricter
+     * nine-times budget starved real renders: at 704x448 one decode costs
+     * more than a tenth of the whole denoise, so the only preview ever
+     * delivered was the step-one noise.) */
     double started = h3_monotonic_seconds();
     if (preview->interval_ms > 0 && preview->emitted) {
         double gap = started - preview->last_emit_s;
         if (gap < (double)preview->interval_ms / 1000.0 ||
-            gap < preview->last_cost_s * 9.0)
+            gap < preview->last_cost_s * 3.0)
             return 0;
     }
     char detail[512];
@@ -844,8 +847,12 @@ static int h3_deliver_denoise_preview(int completed_steps, int total_steps,
         preview->failed = 1;
         return 1;
     }
+    /* The first decode carries one-time Metal graph compilation; letting it
+     * seed the budget starves every later preview on short runs (measured:
+     * ~3x the steady decode cost). The budget trusts only costs measured
+     * from the second decode onward. */
     preview->last_emit_s = h3_monotonic_seconds();
-    preview->last_cost_s = preview->last_emit_s - started;
+    preview->last_cost_s = preview->emitted ? preview->last_emit_s - started : 0.0;
     preview->emitted = 1;
     return 0;
 }

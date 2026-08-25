@@ -188,8 +188,11 @@ static void h3_gpu_profile_emit(H3GPU *gpu, NSString *phase,
     h3_gpu_stats value = gpu.stats;
     double wall = h3_gpu_now() - wall_start;
     NSString *label = gpu.profileLabel ? gpu.profileLabel : @"Metal context";
+    /* The label column must clear the longest label ("resident video VAE
+     * decoder", 26) with two spaces to spare: supervisors split label from
+     * phase on a run of two-plus spaces. */
     fprintf(stderr,
-        "h3 profile: %-24s %-14s wall=%8.3fs encode=%7.3fs "
+        "h3 profile: %-28s %-14s wall=%8.3fs encode=%7.3fs "
         "wait=%8.3fs root-gpu=%7.3fs "
         "peak=%7.3fGiB alloc=%7.3fGiB submissions=%llu "
         "direct=%llu linear=%llu conv=%llu attention=%llu\n",
