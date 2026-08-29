@@ -60,6 +60,7 @@ static void test_resident_preview(const char *model_root) {
     h3_video_frames ordinary;
     if (!h3_video_vae_decode(weights, "h3_shaders.metal", latent,
                              TEST_T, LATENT_H, LATENT_W, progress, NULL,
+                             NULL, NULL,
                              &ordinary, error, sizeof(error))) die(error);
     h3_video_vae_decoder *decoder = h3_video_vae_decoder_load(
         weights, "h3_shaders.metal", LATENT_H, LATENT_W,
@@ -83,7 +84,7 @@ static void test_resident_preview(const char *model_root) {
     h3_video_frames_free(&preview);
     h3_video_frames resident;
     if (!h3_video_vae_decoder_decode(
-            decoder, latent, TEST_T, &resident,
+            decoder, latent, TEST_T, &resident, NULL, NULL,
             error, sizeof(error))) die(error);
     if (resident.frames != ordinary.frames ||
         resident.height != ordinary.height ||
@@ -118,6 +119,7 @@ int main(int argc, char **argv) {
     h3_video_frames got;
     if (!h3_video_vae_decode(weights, "h3_shaders.metal", latent,
                              LATENT_T, LATENT_H, LATENT_W, progress, NULL,
+                             NULL, NULL,
                              &got, error, sizeof(error))) die(error);
     if (got.frames != FRAMES || got.height != HEIGHT || got.width != WIDTH)
         die("semantic VAE returned the wrong shape");
@@ -168,6 +170,7 @@ int main(int argc, char **argv) {
                     }
         if (!h3_video_vae_decode(weights, "h3_shaders.metal", tiled_latent,
                                  LATENT_T, LATENT_H, TILED_W, progress, NULL,
+                                 NULL, NULL,
                                  &got, error, sizeof(error))) die(error);
         if (got.frames != FRAMES || got.height != HEIGHT || got.width != 288)
             die("tiled VAE smoke test returned the wrong shape");
@@ -226,6 +229,7 @@ int main(int argc, char **argv) {
                                        CHUNKED_PIXELS);
         if (!h3_video_vae_decode(weights, "h3_shaders.metal", chunked_latent,
                                  CHUNKED_T, LATENT_H, LATENT_W, progress, NULL,
+                                 NULL, NULL,
                                  &got, error, sizeof(error))) die(error);
         if (got.frames != CHUNKED_FRAMES || got.height != HEIGHT ||
             got.width != WIDTH) die("chunked VAE returned the wrong shape");

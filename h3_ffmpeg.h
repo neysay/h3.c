@@ -51,12 +51,23 @@ int h3_ffmpeg_write_still_rgb24(const char *path, const uint8_t *rgb,
                                 int width, int height, int stride,
                                 char *error, size_t error_size);
 
+/* Live mux progress: frames streamed to the encoder so far. The pipe
+ * throttles the writer to the encoder's pace, so written frames track
+ * encoded frames closely; without this the mux was one blocking call and
+ * its progress row sat at 0/N until everything finished. Called from the
+ * thread that invoked the write. */
+typedef void (*h3_ffmpeg_av_progress)(int frames_written, int frame_count,
+                                      void *opaque);
+
 /* Encode RGB24 video and channel-major F32 PCM through two concurrent pipes.
- * No intermediate uncompressed media file is created. */
+ * No intermediate uncompressed media file is created. on_progress may be
+ * NULL. */
 int h3_ffmpeg_write_av_rgb24_f32(const char *path, const uint8_t *frames,
                                  int frame_count, int width, int height,
                                  int fps, const float *pcm, int samples,
                                  int channels, int sample_rate,
+                                 h3_ffmpeg_av_progress on_progress,
+                                 void *progress_opaque,
                                  char *error, size_t error_size);
 
 #endif

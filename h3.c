@@ -661,6 +661,17 @@ static void h3_text_progress_bridge(int completed, int total, void *opaque) {
     h3_progress_emit(opaque, "text encoder", completed, total);
 }
 
+static void h3_mux_progress_bridge(int written, int total, void *opaque) {
+    h3_progress_emit(opaque, "FFmpeg", written, total);
+}
+
+/* Distinct from the loader's "video VAE load": the decode compute is
+ * minutes of silent GPU work on long renders without its own counter. */
+static void h3_vae_decode_progress_bridge(int completed, int total,
+                                          void *opaque) {
+    h3_progress_emit(opaque, "video VAE decode", completed, total);
+}
+
 static void h3_dit_progress_bridge(const char *phase, int completed, int total,
                                    void *opaque) {
     h3_progress_emit(opaque, phase, completed, total);
@@ -1701,11 +1712,13 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     int video_ok = preview_decoder ?
         h3_video_vae_decoder_decode(
             preview_decoder, video, temporal.video_t, &frames,
+            h3_vae_decode_progress_bridge, &progress,
             detail, sizeof(detail)) :
         h3_video_vae_decode(
             vae_path, "h3_shaders.metal", video,
             temporal.video_t, latent_h, latent_w,
-            h3_vae_progress_bridge, &progress, &frames,
+            h3_vae_progress_bridge, &progress,
+            h3_vae_decode_progress_bridge, &progress, &frames,
             detail, sizeof(detail));
     if (!video_ok) {
         h3_set_error(ctx, "%s", detail);
@@ -1755,6 +1768,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                 params->output_path, rgb8, frames.frames, output_width,
                 output_height, H3_FPS, waveform.pcm, waveform.samples,
                 waveform.channels, waveform.sample_rate,
+                h3_mux_progress_bridge, &progress,
                 detail, sizeof(detail))) {
             h3_set_error(ctx, "%s", detail);
             goto cleanup;

@@ -32,9 +32,14 @@ int h3_video_vae_decoder_preview(h3_video_vae_decoder *decoder,
                         const float *normalized_latent, int latent_time,
                         h3_video_frames *output, int *output_frame_index,
                         char *error, size_t error_size);
+/* decode_progress reports DECODE compute (chunk-by-chunk, tile-by-tile),
+ * distinct from the loader's 36 weight steps: the decode is minutes of
+ * silent GPU work on long renders without it. NULL disables reporting. */
 int h3_video_vae_decoder_decode(h3_video_vae_decoder *decoder,
                         const float *normalized_latent, int latent_time,
                         h3_video_frames *output,
+                        h3_video_vae_progress decode_progress,
+                        void *decode_opaque,
                         char *error, size_t error_size);
 void h3_video_vae_decoder_free(h3_video_vae_decoder *decoder);
 
@@ -46,6 +51,8 @@ int h3_video_vae_decode(const char *weight_directory,
                         const float *normalized_latent, int latent_time,
                         int latent_height, int latent_width,
                         h3_video_vae_progress progress, void *progress_opaque,
+                        h3_video_vae_progress decode_progress,
+                        void *decode_opaque,
                         h3_video_frames *output,
                         char *error, size_t error_size);
 void h3_video_frames_free(h3_video_frames *frames);

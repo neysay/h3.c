@@ -6,6 +6,8 @@
 #include <signal.h>
 #include <spawn.h>
 #include <stdarg.h>
+#include <stdatomic.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -599,6 +601,9 @@ int h3_ffmpeg_write_rgb24(const char *path, const uint8_t *frames,
         "-video_size", size, "-framerate", rate,
         "-i", "pipe:0", "-an", "-c:v", "libx264",
         "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+        /* ~1s GOP: libx264's default keyint of 250 makes any short clip a
+         * single GOP, so a player seek decodes from frame zero. */
+        "-g", rate, "-keyint_min", rate, "-sc_threshold", "0",
         "-movflags", "+faststart", (char *)path, NULL
     };
     posix_spawn_file_actions_t actions;
@@ -711,6 +716,9 @@ typedef struct {
     const uint8_t *data;
     size_t bytes;
     int error;
+    /* Written by the stream thread, polled by the caller for progress. */
+    _Atomic size_t progressed;
+    _Atomic int done;
 } stream_writer;
 
 static void *stream_thread(void *opaque) {
@@ -728,9 +736,11 @@ static void *stream_thread(void *opaque) {
         }
         data += (size_t)written;
         remaining -= (size_t)written;
+        atomic_fetch_add(&writer->progressed, (size_t)written);
     }
     close(writer->descriptor);
     writer->descriptor = -1;
+    atomic_store(&writer->done, 1);
     return NULL;
 }
 
@@ -744,6 +754,8 @@ int h3_ffmpeg_write_av_rgb24_f32(const char *path, const uint8_t *frames,
                                  int frame_count, int width, int height,
                                  int fps, const float *pcm, int samples,
                                  int channels, int sample_rate,
+                                 h3_ffmpeg_av_progress on_progress,
+                                 void *progress_opaque,
                                  char *error, size_t error_size) {
     if (error && error_size) error[0] = '\0';
     if (!path || !*path || !frames || frame_count < 1 || width < 2 ||
@@ -804,6 +816,8 @@ int h3_ffmpeg_write_av_rgb24_f32(const char *path, const uint8_t *frames,
         "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", "libx264", "-preset", "fast", "-crf", "18",
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+        /* Same ~1s GOP as the video-only mux above. */
+        "-g", rate, "-keyint_min", rate, "-sc_threshold", "0",
         "-movflags", "+faststart", (char *)path, NULL
     };
     posix_spawn_file_actions_t actions;
@@ -838,11 +852,11 @@ int h3_ffmpeg_write_av_rgb24_f32(const char *path, const uint8_t *frames,
     sigemptyset(&ignore.sa_mask);
     sigaction(SIGPIPE, &ignore, &previous);
     stream_writer video = {
-        video_pipe[1], frames, (size_t)frame_count * pixels * 3, 0
+        video_pipe[1], frames, (size_t)frame_count * pixels * 3, 0, 0, 0
     };
     stream_writer audio = {
         audio_pipe[1], (const uint8_t *)interleaved,
-        pcm_elements * sizeof(*interleaved), 0
+        pcm_elements * sizeof(*interleaved), 0, 0, 0
     };
     pthread_t video_thread, audio_thread;
     int video_code = pthread_create(&video_thread, NULL, stream_thread, &video);
@@ -855,7 +869,26 @@ int h3_ffmpeg_write_av_rgb24_f32(const char *path, const uint8_t *frames,
         close(audio.descriptor);
         audio.descriptor = -1;
     }
-    if (!video_code) pthread_join(video_thread, NULL);
+    if (!video_code) {
+        if (on_progress) {
+            /* Poll the writer's counter from THIS thread so the caller's
+             * progress sink never runs concurrently with itself. The pipe
+             * throttles writes to the encoder's pace, so this is honest
+             * encode progress, not a memcpy racing ahead. */
+            size_t frame_bytes = pixels * 3;
+            int last_reported = -1;
+            struct timespec tick = {0, 100000000};
+            while (!atomic_load(&video.done)) {
+                int written = (int)(atomic_load(&video.progressed) / frame_bytes);
+                if (written != last_reported) {
+                    on_progress(written, frame_count, progress_opaque);
+                    last_reported = written;
+                }
+                nanosleep(&tick, NULL);
+            }
+        }
+        pthread_join(video_thread, NULL);
+    }
     if (!audio_code) pthread_join(audio_thread, NULL);
     sigaction(SIGPIPE, &previous, NULL);
     free(interleaved);

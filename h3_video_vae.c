@@ -836,6 +836,9 @@ static int decoder_decode_chunk(h3_video_vae_decoder *decoder,
                                 int latent_time, int chunk,
                                 int selected_frame,
                                 h3_video_frames *output,
+                                h3_video_vae_progress decode_progress,
+                                void *decode_opaque,
+                                int base_units, int total_units,
                                 char *error, size_t error_size) {
     if (output) memset(output, 0, sizeof(*output));
     if (!decoder || !normalized_latent || !output || latent_time < 7 ||
@@ -881,6 +884,9 @@ static int decoder_decode_chunk(h3_video_vae_decoder *decoder,
             if (ok) {
                 int index = tile_y * decoder->x_axis.count + tile_x;
                 tiles[index] = tile.rgb;
+                if (decode_progress)
+                    decode_progress(base_units + index + 1, total_units,
+                                    decode_opaque);
             }
         }
     if (ok) ok = stitch_tiles(tiles, &decoder->y_axis, &decoder->x_axis,
@@ -972,6 +978,7 @@ int h3_video_vae_decoder_preview(h3_video_vae_decoder *decoder,
     if (global_frame >= output_frames) global_frame = output_frames - 1;
     int ok = decoder_decode_chunk(decoder, normalized_latent, latent_time,
                                   chunk, local_frame, output,
+                                  NULL, NULL, 0, 0,
                                   error, error_size);
     if (ok) *output_frame_index = global_frame;
     return ok;
@@ -980,6 +987,8 @@ int h3_video_vae_decoder_preview(h3_video_vae_decoder *decoder,
 int h3_video_vae_decoder_decode(h3_video_vae_decoder *decoder,
                         const float *normalized_latent, int latent_time,
                         h3_video_frames *output,
+                        h3_video_vae_progress decode_progress,
+                        void *decode_opaque,
                         char *error, size_t error_size) {
     if (output) memset(output, 0, sizeof(*output));
     if (error && error_size) error[0] = '\0';
@@ -1004,11 +1013,15 @@ int h3_video_vae_decoder_decode(h3_video_vae_decoder *decoder,
         return 0;
     }
     int ok = 1;
+    int tile_units = decoder->y_axis.count * decoder->x_axis.count;
     for (int chunk = 0; chunk < chunks && ok; chunk++) {
         h3_video_frames decoded;
         memset(&decoded, 0, sizeof(decoded));
         ok = decoder_decode_chunk(decoder, normalized_latent, latent_time,
-                                  chunk, -1, &decoded, error, error_size);
+                                  chunk, -1, &decoded,
+                                  decode_progress, decode_opaque,
+                                  chunk * tile_units, chunks * tile_units,
+                                  error, error_size);
         if (!ok) break;
         if (chunk) for (int frame = 0; frame < 5; frame++) {
             float alpha = (float)frame / 5.0f;
@@ -1054,6 +1067,8 @@ static int decode_chunked(const char *weight_directory,
                           const float *latent_mean, const float *latent_std,
                           int tile_pixels,
                           h3_video_vae_progress progress, void *progress_opaque,
+                          h3_video_vae_progress decode_progress,
+                          void *decode_opaque,
                           h3_video_frames *output, char *error,
                           size_t error_size) {
     tile_axis y_axis, x_axis;
@@ -1135,6 +1150,9 @@ static int decode_chunked(const char *weight_directory,
                 if (ok) {
                     int index = tile_y * x_axis.count + tile_x;
                     tiles[index] = tile.rgb;
+                    if (decode_progress)
+                        decode_progress(chunk * tile_count + index + 1,
+                                        chunks * tile_count, decode_opaque);
                 }
             }
         h3_video_frames decoded;
@@ -1189,6 +1207,8 @@ int h3_video_vae_decode(const char *weight_directory,
                         const float *normalized_latent, int latent_time,
                         int latent_height, int latent_width,
                         h3_video_vae_progress progress, void *progress_opaque,
+                        h3_video_vae_progress decode_progress,
+                        void *decode_opaque,
                         h3_video_frames *output,
                         char *error, size_t error_size) {
     if (output) memset(output, 0, sizeof(*output));
@@ -1231,8 +1251,9 @@ int h3_video_vae_decode(const char *weight_directory,
         int ok = decode_chunked(weight_directory, shader_source_path,
                                 normalized_latent, latent_time, latent_height,
                                 latent_width, latent_mean, latent_std,
-                                tile_pixels, progress,
-                                progress_opaque, output, error, error_size);
+                                tile_pixels, progress, progress_opaque,
+                                decode_progress, decode_opaque,
+                                output, error, error_size);
         if (!ok) h3_video_frames_free(output);
         return ok;
     }

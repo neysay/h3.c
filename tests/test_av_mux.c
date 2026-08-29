@@ -11,6 +11,18 @@ static void die(const char *message) {
     exit(1);
 }
 
+static int progress_calls;
+static int last_progress;
+
+static void record_progress(int written, int total, void *opaque) {
+    (void)total;
+    (void)opaque;
+    if (written < last_progress)
+        die("mux progress went backwards");
+    last_progress = written;
+    progress_calls++;
+}
+
 int main(int argc, char **argv) {
     enum { WIDTH = 32, HEIGHT = 32, FRAMES = 8, SAMPLES = 64000 };
     const char *path = argc > 1 ? argv[1] : "/tmp/h3-av-mux-test.mp4";
@@ -35,7 +47,10 @@ int main(int argc, char **argv) {
     char error[512];
     if (!h3_ffmpeg_write_av_rgb24_f32(path, rgb, FRAMES, WIDTH, HEIGHT, 24,
                                       pcm, SAMPLES, 2, 32000,
+                                      record_progress, NULL,
                                       error, sizeof(error))) die(error);
+    if (progress_calls < 1) die("mux progress callback never fired");
+    if (last_progress > FRAMES) die("mux progress overshot the frame count");
     struct stat status;
     if (stat(path, &status) != 0 || status.st_size < 1000)
         die("FFmpeg did not create a nonempty A/V container");
