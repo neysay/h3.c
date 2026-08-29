@@ -66,6 +66,16 @@ static void test_temporal_and_canvas(void) {
     CHECK(h3_reference_video_canvas(640, 360, &width, &height));
     CHECK(width == 640 && height == 352);
     CHECK(!h3_reference_video_canvas(0, 360, &width, &height));
+    /* --ref-video-size match sizes a clip exactly like a reference image:
+     * into the render's area, never enlarged. */
+    CHECK(h3_reference_video_canvas_matched(1920, 1080, 512, 512,
+                                            &width, &height));
+    CHECK(width == 672 && height == 384);
+    CHECK(h3_reference_video_canvas_matched(640, 360, 1024, 1024,
+                                            &width, &height));
+    CHECK(width == 640 && height == 352);
+    CHECK(!h3_reference_video_canvas_matched(0, 360, 512, 512,
+                                             &width, &height));
 }
 
 static void test_schedule(void) {

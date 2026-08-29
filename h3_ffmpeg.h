@@ -9,10 +9,17 @@ typedef enum {
     H3_IMAGE_FIT_COVER = 1
 } h3_image_fit;
 
-/* Inspect the first visual stream without decoding it. H3_FFPROBE may select
- * an explicit ffprobe-compatible executable. */
+/* Inspect the first visual stream without decoding it, reporting DISPLAY
+ * geometry: rotation side data (phone footage) and non-square sample aspect
+ * ratios are applied, matching what the FFmpeg decode path delivers.
+ * H3_FFPROBE may select an explicit ffprobe-compatible executable. */
 int h3_ffprobe_visual_size(const char *path, int *width, int *height,
                            char *error, size_t error_size);
+
+/* Container duration in seconds, for diagnostics (e.g. warning when a
+ * reference clip outlasts the render). */
+int h3_ffprobe_media_seconds(const char *path, double *seconds,
+                             char *error, size_t error_size);
 
 /* Decode one visual stream through FFmpeg. The caller owns channel-major F32
  * [3,height,width] RGB in [0,1]. */

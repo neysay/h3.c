@@ -1097,9 +1097,16 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                 presentations[index].vision_count = 1;
                 vision_output_count++;
             } else {
-                if (!h3_reference_video_canvas(
+                int canvas_ok = params->reference_video_size ==
+                                H3_REFERENCE_VIDEO_MATCH ?
+                    h3_reference_video_canvas_matched(
                         source_width, source_height,
-                        &media_width, &media_height)) {
+                        render_width, render_height,
+                        &media_width, &media_height) :
+                    h3_reference_video_canvas(
+                        source_width, source_height,
+                        &media_width, &media_height);
+                if (!canvas_ok) {
                     h3_set_error(ctx,
                         "cannot resolve reference video %zu canvas", index + 1);
                     goto cleanup;
@@ -1111,6 +1118,23 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                         detail, sizeof(detail))) {
                     h3_set_error(ctx, "%s", detail);
                     goto cleanup;
+                }
+                /* A clip that outlasts the render conditions only its head:
+                 * the decode stops at the render's frame count and the tail
+                 * silently never influences anything. Say so. The 17-frame
+                 * slack ignores the decoder's own 5+17k cadence trim, which
+                 * loses at most 16 frames and is not the render's doing. */
+                double clip_seconds = 0.0;
+                if (h3_ffprobe_media_seconds(reference->path, &clip_seconds,
+                                             detail, sizeof(detail)) &&
+                    clip_seconds * H3_FPS >
+                        (double)condition_frames[visual_count] + 17.0) {
+                    fprintf(stderr,
+                            "h3: warning: reference video %zu runs %.1fs; "
+                            "only its first %d frames (%.1fs) condition the "
+                            "render\n", index + 1, clip_seconds,
+                            condition_frames[visual_count],
+                            (double)condition_frames[visual_count] / H3_FPS);
                 }
                 size_t samples = ((size_t)condition_frames[visual_count] + 11) / 12;
                 size_t blocks = (samples + 1) / 2;
@@ -1177,10 +1201,33 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                 }
                 max_samples = (int)llround(
                     (double)condition_frames[visual] * 32000.0 / H3_FPS);
+                /* The model conditions on at most 15 seconds of reference
+                 * audio in total, but a soundtrack window derived from the
+                 * render length overshoots that budget at the model's own
+                 * longest legal renders (362 frames = 15.08s). Trim to the
+                 * remaining budget instead of failing a legal request. */
+                size_t audio_budget = (size_t)32000 * 15 - total_audio_samples;
+                if ((size_t)max_samples > audio_budget) {
+                    fprintf(stderr,
+                            "h3: warning: video soundtrack %zu trimmed to "
+                            "%.1fs to fit the 15-second reference audio "
+                            "budget\n", index + 1,
+                            (double)audio_budget / 32000.0);
+                    max_samples = (int)audio_budget;
+                }
                 if (max_samples < 64000) {
-                    h3_set_error(ctx,
-                        "video soundtrack %zu requires at least 2 seconds; "
-                        "request at least 56 output frames", index + 1);
+                    if (audio_budget < 64000) {
+                        h3_set_error(ctx,
+                            "video soundtrack %zu needs 2 seconds but earlier "
+                            "reference audio leaves only %.1fs of the "
+                            "15-second budget", index + 1,
+                            (double)audio_budget / 32000.0);
+                    } else {
+                        h3_set_error(ctx,
+                            "video soundtrack %zu requires at least 2 "
+                            "seconds; request at least 56 output frames",
+                            index + 1);
+                    }
                     goto cleanup;
                 }
             }

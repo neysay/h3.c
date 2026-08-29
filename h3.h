@@ -46,6 +46,14 @@ typedef enum {
     H3_REFERENCE_IMAGE_MAX = 1
 } h3_reference_image_size;
 
+typedef enum {
+    /* The released self-sized envelope (768-short-edge nominal). */
+    H3_REFERENCE_VIDEO_AUTO = 0,
+    /* Scale the clip into the render's own area, like reference images do,
+     * so borrowed structure lines up spatially with the output. */
+    H3_REFERENCE_VIDEO_MATCH = 1
+} h3_reference_video_size;
+
 typedef struct {
     int width;
     int height;
@@ -74,6 +82,7 @@ typedef struct {
     const h3_reference *references;
     size_t reference_count;
     h3_reference_image_size reference_image_size;
+    h3_reference_video_size reference_video_size;
     /* Evaluate one of every N denoiser steps. 1 is the close-reference path,
      * 2 is the validated fast path, and 3 is the aggressive fast path. */
     int denoise_reuse;
@@ -136,6 +145,7 @@ typedef struct {
 #define H3_PARAMS_DEFAULT { \
     H3_DEFAULT_WIDTH, H3_DEFAULT_HEIGHT, H3_DEFAULT_FRAMES, H3_DEFAULT_STEPS, \
     UINT64_C(42), NULL, NULL, NULL, NULL, 0, H3_REFERENCE_IMAGE_MATCH, \
+    H3_REFERENCE_VIDEO_AUTO, \
     1, H3_DEFAULT_DIT_LAYERS, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL \
 }
 

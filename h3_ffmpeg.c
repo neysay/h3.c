@@ -1,6 +1,7 @@
 #include "h3_ffmpeg.h"
 
 #include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
@@ -71,26 +72,15 @@ static int write_all(int descriptor, const uint8_t *data, size_t bytes,
     return 1;
 }
 
-int h3_ffprobe_visual_size(const char *path, int *width, int *height,
+static int ffprobe_capture(char *const arguments[], const char *path,
+                           char *output, size_t output_size,
                            char *error, size_t error_size) {
-    if (error && error_size) error[0] = '\0';
-    if (width) *width = 0;
-    if (height) *height = 0;
-    if (!path || !*path || !width || !height) {
-        fail(error, error_size, "invalid FFprobe visual-size arguments");
-        return 0;
-    }
     int stream[2];
     if (pipe(stream) != 0) {
         fail(error, error_size, "cannot create FFprobe pipe: %s",
              strerror(errno));
         return 0;
     }
-    char *arguments[] = {
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x",
-        (char *)path, NULL
-    };
     posix_spawn_file_actions_t actions;
     int code = posix_spawn_file_actions_init(&actions);
     if (!code) code = posix_spawn_file_actions_adddup2(
@@ -99,7 +89,7 @@ int h3_ffprobe_visual_size(const char *path, int *width, int *height,
     if (!code) code = posix_spawn_file_actions_addclose(&actions, stream[1]);
     pid_t child = -1;
     if (!code) code = posix_spawnp(&child, ffprobe_program(), &actions, NULL,
-                                    arguments, environ);
+                                    (char *const *)arguments, environ);
     posix_spawn_file_actions_destroy(&actions);
     close(stream[1]);
     if (code) {
@@ -107,7 +97,6 @@ int h3_ffprobe_visual_size(const char *path, int *width, int *height,
         fail(error, error_size, "cannot start FFprobe: %s", strerror(code));
         return 0;
     }
-    char output[128];
     size_t received = 0;
     int overflow = 0;
     while (1) {
@@ -115,7 +104,7 @@ int h3_ffprobe_visual_size(const char *path, int *width, int *height,
         ssize_t amount = read(stream[0], &byte, 1);
         if (amount < 0 && errno == EINTR) continue;
         if (amount <= 0) break;
-        if (received + 1 < sizeof(output)) output[received++] = byte;
+        if (received + 1 < output_size) output[received++] = byte;
         else overflow = 1;
     }
     close(stream[0]);
@@ -126,27 +115,103 @@ int h3_ffprobe_visual_size(const char *path, int *width, int *height,
         return 0;
     }
     output[received] = '\0';
-    int parsed_width = 0, parsed_height = 0, consumed = 0;
-    if (overflow || !WIFEXITED(status) || WEXITSTATUS(status) != 0 ||
-        sscanf(output, "%dx%d%n", &parsed_width, &parsed_height, &consumed) != 2) {
-        fail(error, error_size, "FFprobe could not inspect visual stream %s",
-             path);
+    if (overflow || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fail(error, error_size, "FFprobe could not inspect %s", path);
         return 0;
     }
-    for (char *cursor = output + consumed; *cursor; cursor++) {
-        if (*cursor != ' ' && *cursor != '\t' && *cursor != '\r' &&
-            *cursor != '\n') {
-            fail(error, error_size, "FFprobe returned an invalid visual size");
-            return 0;
-        }
+    return 1;
+}
+
+int h3_ffprobe_visual_size(const char *path, int *width, int *height,
+                           char *error, size_t error_size) {
+    if (error && error_size) error[0] = '\0';
+    if (width) *width = 0;
+    if (height) *height = 0;
+    if (!path || !*path || !width || !height) {
+        fail(error, error_size, "invalid FFprobe visual-size arguments");
+        return 0;
+    }
+    /* Coded dimensions alone lie about real footage: phone clips store
+     * portrait video as landscape frames plus a rotate-90 display matrix,
+     * and anamorphic streams carry a non-square sample aspect ratio. The
+     * FFmpeg decode path auto-applies both, so the probe must report the
+     * same display geometry — otherwise the canvas is planned for a shape
+     * the decoded frames will not have and the reference arrives sideways
+     * or stretched. */
+    char *arguments[] = {
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries",
+        "stream=width,height,sample_aspect_ratio:stream_side_data=rotation",
+        "-of", "default=noprint_wrappers=1",
+        (char *)path, NULL
+    };
+    char output[512];
+    if (!ffprobe_capture(arguments, path, output, sizeof(output),
+                         error, error_size)) return 0;
+    int parsed_width = 0, parsed_height = 0;
+    long sar_num = 0, sar_den = 0;
+    double rotation = 0.0;
+    for (char *line = output; line && *line; ) {
+        char *next = strchr(line, '\n');
+        if (next) *next++ = '\0';
+        int number;
+        long numerator, denominator;
+        double angle;
+        if (sscanf(line, "width=%d", &number) == 1) parsed_width = number;
+        else if (sscanf(line, "height=%d", &number) == 1)
+            parsed_height = number;
+        else if (sscanf(line, "sample_aspect_ratio=%ld:%ld",
+                        &numerator, &denominator) == 2) {
+            sar_num = numerator;
+            sar_den = denominator;
+        } else if (sscanf(line, "rotation=%lf", &angle) == 1)
+            rotation = angle;
+        line = next;
     }
     if (parsed_width < 1 || parsed_height < 1) {
         fail(error, error_size, "visual stream has invalid dimensions %dx%d",
              parsed_width, parsed_height);
         return 0;
     }
+    if (sar_num > 0 && sar_den > 0 && sar_num != sar_den) {
+        double scaled = (double)parsed_width *
+                        (double)sar_num / (double)sar_den;
+        parsed_width = scaled < 1.0 ? 1 : (int)llround(scaled);
+    }
+    long quarter_turns = ((lround(rotation / 90.0) % 4) + 4) % 4;
+    if (quarter_turns == 1 || quarter_turns == 3) {
+        int swap = parsed_width;
+        parsed_width = parsed_height;
+        parsed_height = swap;
+    }
     *width = parsed_width;
     *height = parsed_height;
+    return 1;
+}
+
+int h3_ffprobe_media_seconds(const char *path, double *seconds,
+                             char *error, size_t error_size) {
+    if (error && error_size) error[0] = '\0';
+    if (seconds) *seconds = 0.0;
+    if (!path || !*path || !seconds) {
+        fail(error, error_size, "invalid FFprobe duration arguments");
+        return 0;
+    }
+    char *arguments[] = {
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration", "-of", "csv=p=0",
+        (char *)path, NULL
+    };
+    char output[128];
+    if (!ffprobe_capture(arguments, path, output, sizeof(output),
+                         error, error_size)) return 0;
+    double parsed = 0.0;
+    if (sscanf(output, "%lf", &parsed) != 1 || !(parsed > 0.0)) {
+        fail(error, error_size, "FFprobe could not read the duration of %s",
+             path);
+        return 0;
+    }
+    *seconds = parsed;
     return 1;
 }
 

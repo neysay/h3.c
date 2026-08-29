@@ -97,6 +97,17 @@ int h3_reference_image_canvas(int width, int height,
     return 1;
 }
 
+int h3_reference_video_canvas_matched(int width, int height,
+                                      int target_width, int target_height,
+                                      int *adapted_w, int *adapted_h) {
+    /* Opt-in --ref-video-size match: same sizing rule as reference images
+     * (scale into the target area, never upscale, snap to the canvas
+     * multiple) so a structure-donor clip lands on the render's own grid. */
+    return h3_reference_image_canvas(width, height,
+                                     target_width, target_height, 0,
+                                     adapted_w, adapted_h);
+}
+
 int h3_reference_video_canvas(int width, int height,
                               int *adapted_w, int *adapted_h) {
     if (width < 1 || height < 1 || !adapted_w || !adapted_h ||

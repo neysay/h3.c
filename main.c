@@ -52,6 +52,7 @@ static void usage(const char *program) {
         "      --ref-image PATH    Append an ordered Ref2VA image\n"
         "      --ref-image-size S  Image sizing: match (default) or max\n"
         "      --ref-video PATH    Append video, including embedded audio\n"
+        "      --ref-video-size S  Video sizing: auto (default) or match\n"
         "      --ref-silent-video PATH  Append video without its audio\n"
         "      --ref-video-audio VIDEO AUDIO  Append video + soundtrack\n"
         "      --ref-audio PATH    Append an ordered standalone audio clip\n"
@@ -297,7 +298,8 @@ int main(int argc, char **argv) {
            OPT_USE_SLOWER_GROUPED_QUANTIZER,
            OPT_SEED,
            OPT_FIRST, OPT_LAST, OPT_REF_IMAGE, OPT_REF_IMAGE_SIZE,
-           OPT_REF_VIDEO, OPT_REF_SILENT_VIDEO, OPT_REF_VIDEO_AUDIO,
+           OPT_REF_VIDEO, OPT_REF_VIDEO_SIZE,
+           OPT_REF_SILENT_VIDEO, OPT_REF_VIDEO_AUDIO,
            OPT_REF_AUDIO, OPT_FRAMES_DIR, OPT_PREVIEW_DIR, OPT_SHOW, OPT_ZOOM,
            OPT_PROFILE, OPT_INFO };
     static const struct option options[] = {
@@ -344,6 +346,7 @@ int main(int argc, char **argv) {
         {"ref-image", required_argument, NULL, OPT_REF_IMAGE},
         {"ref-image-size", required_argument, NULL, OPT_REF_IMAGE_SIZE},
         {"ref-video", required_argument, NULL, OPT_REF_VIDEO},
+        {"ref-video-size", required_argument, NULL, OPT_REF_VIDEO_SIZE},
         {"ref-silent-video", required_argument, NULL, OPT_REF_SILENT_VIDEO},
         {"ref-video-audio", required_argument, NULL, OPT_REF_VIDEO_AUDIO},
         {"ref-audio", required_argument, NULL, OPT_REF_AUDIO},
@@ -461,6 +464,17 @@ int main(int argc, char **argv) {
                 else {
                     fprintf(stderr,
                         "h3: --ref-image-size must be match or max\n");
+                    return 2;
+                }
+                break;
+            case OPT_REF_VIDEO_SIZE:
+                if (!strcmp(optarg, "auto"))
+                    params.reference_video_size = H3_REFERENCE_VIDEO_AUTO;
+                else if (!strcmp(optarg, "match"))
+                    params.reference_video_size = H3_REFERENCE_VIDEO_MATCH;
+                else {
+                    fprintf(stderr,
+                        "h3: --ref-video-size must be auto or match\n");
                     return 2;
                 }
                 break;

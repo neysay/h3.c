@@ -108,6 +108,11 @@ int h3_reference_image_canvas(int width, int height,
  * smaller source is never enlarged. */
 int h3_reference_video_canvas(int width, int height,
                               int *adapted_w, int *adapted_h);
+/* --ref-video-size match: size the clip like a reference image instead —
+ * into the render's own area — so borrowed structure lines up spatially. */
+int h3_reference_video_canvas_matched(int width, int height,
+                                      int target_width, int target_height,
+                                      int *adapted_w, int *adapted_h);
 
 double h3_time_shift_sigma(double sigma, double from_shift, double to_shift);
 double h3_time_shift_slope(double sigma, double from_shift, double to_shift);
