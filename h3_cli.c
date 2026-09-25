@@ -2,6 +2,7 @@
 
 #include "h3_ffmpeg.h"
 #include "h3_host.h"
+#include "h3_settings.h"
 #include "h3_terminal.h"
 #include "linenoise.h"
 
@@ -27,6 +28,7 @@ typedef struct {
     const char *model_dir;
     h3_params params;
     h3_reference references[12];
+    h3_lora loras[H3_MAX_LORAS];
     char *first_frame;
     char *last_frame;
     char output_dir[H3_CLI_PATH];
@@ -146,6 +148,22 @@ static int cli_frame(const h3_frame *frame, void *opaque) {
     return 0;
 }
 
+static void clear_loras(h3_cli_state *state) {
+    for (size_t index = 0; index < state->params.lora_count; index++)
+        free((char *)state->loras[index].path);
+    state->params.lora_count = 0;
+}
+
+static void print_loras(const h3_cli_state *state) {
+    if (!state->params.lora_count) {
+        puts("LoRAs: none");
+        return;
+    }
+    for (size_t index = 0; index < state->params.lora_count; index++)
+        printf("LoRA %zu: %s (strength %.3g)\n", index + 1,
+               state->loras[index].path, (double)state->loras[index].scale);
+}
+
 static void print_help(void) {
     puts("Commands:");
     puts("  !help                    Show this help");
@@ -167,6 +185,7 @@ static void print_help(void) {
     puts("  !last [PATH|clear]       Set, show, or clear last frame");
     puts("  !ref-image PATH          Append an ordered Ref2VA image");
     puts("  !refs [clear]            List or clear ordered references");
+    puts("  !lora [PATH[:S]|clear]   Add, list, or clear DiT LoRAs");
     puts("  !ref-remove N            Remove ordered reference N");
     puts("  !show [on|off]           Toggle denoising previews");
     puts("  !zoom N                  Set terminal image zoom");
@@ -202,6 +221,8 @@ static void print_status(const h3_cli_state *state) {
     else printf("Seed: %" PRIu64 "\n", state->params.seed);
     printf("First: %s\n", state->first_frame ? state->first_frame : "none");
     printf("Last: %s\n", state->last_frame ? state->last_frame : "none");
+    printf("LoRAs: %zu%s\n", state->params.lora_count,
+           state->params.lora_count ? " (use !lora to list)" : "");
     printf("References: %zu%s\n", state->params.reference_count,
            state->params.reference_count ? " (use !refs to list)" : "");
     printf("Show: %s | open: %s | output: %s\n",
@@ -454,9 +475,13 @@ static int generate(h3_cli_state *state, const char *prompt) {
         fprintf(stderr, "h3: %s\n", h3_last_error(state->ctx));
         return 0;
     }
-    h3_result_free(result);
     double elapsed = (double)(end.tv_sec - begin.tv_sec) +
         (double)(end.tv_nsec - begin.tv_nsec) / 1e9;
+    char detail[512];
+    if (!h3_settings_write(output, state->model_dir, prompt, &params, result,
+                           elapsed, detail, sizeof(detail)))
+        fprintf(stderr, "h3: warning: %s\n", detail);
+    h3_result_free(result);
     snprintf(state->last_output, sizeof(state->last_output), "%s", output);
     free(state->last_prompt);
     state->last_prompt = strdup(prompt);
@@ -665,7 +690,37 @@ static int process_command(h3_cli_state *state, char *line, int *repeat) {
             if (!copy_file(state->last_output, destination))
                 fprintf(stderr, "h3: cannot save %s: %s\n", destination,
                         strerror(errno));
-            else printf("Saved: %s\n", destination);
+            else {
+                printf("Saved: %s\n", destination);
+                char *from = h3_settings_path_for(state->last_output);
+                char *to = h3_settings_path_for(destination);
+                if (from && to && copy_file(from, to))
+                    printf("Saved: %s\n", to);
+                free(from);
+                free(to);
+            }
+        }
+    } else if (!strcasecmp(command, "lora")) {
+        argument = skip_spaces(argument);
+        if (!strcasecmp(argument, "clear")) {
+            clear_loras(state);
+            puts("LoRAs: none");
+        } else if (*argument) {
+            h3_lora lora;
+            char *copy = strdup(argument);
+            if (state->params.lora_count >= H3_MAX_LORAS) {
+                fprintf(stderr, "h3: at most %d LoRAs are supported\n",
+                        H3_MAX_LORAS);
+                free(copy);
+            } else if (!copy || !h3_settings_parse_lora(copy, &lora)) {
+                fprintf(stderr, "h3: !lora needs PATH[:SCALE]\n");
+                free(copy);
+            } else {
+                state->loras[state->params.lora_count++] = lora;
+                print_loras(state);
+            }
+        } else {
+            print_loras(state);
         }
     } else if (!strcasecmp(command, "cache")) {
         if (!strcasecmp(argument, "clear")) {
@@ -701,6 +756,19 @@ int h3_cli_run(h3_ctx *ctx, const char *model_dir,
     size_t initial_reference_count = initial->reference_count;
     state.params.references = state.references;
     state.params.reference_count = 0;
+    state.params.loras = state.loras;
+    state.params.lora_count = 0;
+    for (size_t index = 0; index < initial->lora_count; index++) {
+        char *path = strdup(initial->loras[index].path);
+        if (!path) {
+            fprintf(stderr, "h3: cannot copy initial LoRAs\n");
+            clear_loras(&state);
+            return 1;
+        }
+        state.loras[index] = initial->loras[index];
+        state.loras[index].path = path;
+        state.params.lora_count++;
+    }
     state.params.output_path = NULL;
     state.params.first_frame = NULL;
     state.params.last_frame = NULL;
@@ -787,6 +855,7 @@ int h3_cli_run(h3_ctx *ctx, const char *model_dir,
     free(state.first_frame);
     free(state.last_frame);
     free(state.last_prompt);
+    clear_loras(&state);
     clear_references(&state);
     puts("Goodbye.");
     return 0;

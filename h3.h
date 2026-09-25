@@ -66,6 +66,17 @@ typedef struct {
     int denoise_steps;
 } h3_frame;
 
+/* A DiT adapter applied to the transformer weights at load time. Accepts
+ * native-key (reference/ComfyUI/kohya) and diffusers/PEFT-key LoRAs, plus
+ * FastVideo full-weight .diff/.diff_b deltas. The checkpoint on disk is never
+ * modified. */
+typedef struct {
+    const char *path;
+    /* Strength multiplier over the adapter's own alpha/rank scale.
+     * 1.0 applies the adapter exactly as trained. */
+    float scale;
+} h3_lora;
+
 typedef int (*h3_frame_callback)(const h3_frame *frame, void *opaque);
 typedef int (*h3_progress_callback)(const char *phase, int completed, int total,
                                     void *opaque);
@@ -140,13 +151,17 @@ typedef struct {
     h3_frame_callback on_frame;
     h3_progress_callback on_progress;
     void *callback_opaque;
+    /* Adapters folded into the DiT weights at load, in order. Not available
+     * with ssd_streaming, which rereads original weights every forward. */
+    const h3_lora *loras;
+    size_t lora_count;
 } h3_params;
 
 #define H3_PARAMS_DEFAULT { \
     H3_DEFAULT_WIDTH, H3_DEFAULT_HEIGHT, H3_DEFAULT_FRAMES, H3_DEFAULT_STEPS, \
     UINT64_C(42), NULL, NULL, NULL, NULL, 0, H3_REFERENCE_IMAGE_MATCH, \
     H3_REFERENCE_VIDEO_AUTO, \
-    1, H3_DEFAULT_DIT_LAYERS, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL \
+    1, H3_DEFAULT_DIT_LAYERS, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, 0 \
 }
 
 typedef struct {

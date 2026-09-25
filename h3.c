@@ -2,6 +2,7 @@
 #include "h3_audio_vae.h"
 #include "h3_host.h"
 #include "h3_dit.h"
+#include "h3_lora.h"
 #include "h3_ffmpeg.h"
 #include "h3_metal.h"
 #include "h3_multimodal.h"
@@ -162,6 +163,26 @@ failed:
     return NULL;
 }
 
+static void h3_report_loras(const h3_params *params,
+                            const h3_lora_set *loras) {
+    for (size_t index = 0; index < h3_lora_set_count(loras); index++) {
+        h3_lora_stats stats;
+        h3_lora_set_stats(loras, index, &stats);
+        fprintf(stderr,
+                "h3: LoRA %s (%s): %zu low-rank + %zu full deltas, "
+                "scale %.4g x strength %.3g, patched %zu/%zu tensors\n",
+                params->loras[index].path, stats.format, stats.low_rank,
+                stats.full_deltas, (double)stats.scale,
+                (double)params->loras[index].scale, stats.applied,
+                stats.targets);
+        if (stats.applied < stats.targets && params->dit_layers >= 50)
+            fprintf(stderr, "h3: warning: %zu LoRA target tensors were never "
+                    "loaded\n", stats.targets - stats.applied);
+    }
+    fprintf(stderr, "h3: LoRA apply %.2f s\n",
+            h3_lora_set_apply_seconds(loras));
+}
+
 static char *h3_prepared_key(const char *conditioning,
                              const h3_params *params,
                              int render_width, int render_height) {
@@ -188,6 +209,14 @@ static char *h3_prepared_key(const char *conditioning,
             params->use_slower_grouped_quantizer)) {
         free(key.text);
         return NULL;
+    }
+    for (size_t index = 0; index < params->lora_count; index++) {
+        if (!h3_key_append(&key, "|lora-scale=%.9g",
+                           (double)params->loras[index].scale) ||
+            !h3_key_file(&key, "lora", params->loras[index].path)) {
+            free(key.text);
+            return NULL;
+        }
     }
     return key.text;
 }
@@ -549,6 +578,24 @@ static int h3_valid_params(h3_ctx *ctx, const h3_params *params) {
     }
     if (params->ssd_streaming != 0 && params->ssd_streaming != 1) {
         h3_set_error(ctx, "SSD streaming must be zero or one");
+        return 0;
+    }
+    if (params->lora_count > H3_MAX_LORAS ||
+        (params->lora_count && !params->loras)) {
+        h3_set_error(ctx, "at most %d LoRAs are supported", H3_MAX_LORAS);
+        return 0;
+    }
+    for (size_t index = 0; index < params->lora_count; index++) {
+        if (!params->loras[index].path || !*params->loras[index].path ||
+            !isfinite(params->loras[index].scale)) {
+            h3_set_error(ctx, "LoRA %zu needs a path and a finite scale",
+                         index + 1);
+            return 0;
+        }
+    }
+    if (params->ssd_streaming && params->lora_count) {
+        h3_set_error(ctx, "LoRAs patch resident weights and cannot be "
+                         "combined with SSD streaming");
         return 0;
     }
     if (params->ssd_streaming && params->use_int8_row_fc2) {
@@ -948,6 +995,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     h3_layout layout;
     memset(&layout, 0, sizeof(layout));
     h3_dit *dit = NULL;
+    h3_lora_set *loras = NULL;
     h3_video_vae_decoder *preview_decoder = NULL;
     h3_live_preview live_preview;
     memset(&live_preview, 0, sizeof(live_preview));
@@ -1568,6 +1616,10 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             goto cleanup;
         }
         fprintf(stderr, "h3: prepared DiT cache hit\n");
+    } else if (params->lora_count &&
+               !(loras = h3_lora_set_open(params->loras, params->lora_count,
+                                          detail, sizeof(detail)))) {
+        /* Resolve every adapter key before paying for the DiT load. */
     } else if (conditioned) {
         dit = h3_dit_load_conditioned(
             dit_path, "h3_shaders.metal", &text, &layout, &sigmas,
@@ -1585,7 +1637,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             params->use_slower_uncached_int8_scales,
             params->use_slower_dynamic_fc1_k,
             params->use_slower_grouped_quantizer,
-            params->use_int8_row_fc2,
+            params->use_int8_row_fc2, loras,
             condition_video_rows, condition_video_elements,
             condition_audio_rows, condition_audio_elements,
             h3_dit_progress_bridge, &progress, detail, sizeof(detail));
@@ -1606,12 +1658,17 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             params->use_slower_uncached_int8_scales,
             params->use_slower_dynamic_fc1_k,
             params->use_slower_grouped_quantizer,
-            params->use_int8_row_fc2,
+            params->use_int8_row_fc2, loras,
             h3_dit_progress_bridge, &progress, detail, sizeof(detail));
     }
     if (!dit) {
         h3_set_error(ctx, "%s", detail);
         goto cleanup;
+    }
+    if (loras) {
+        h3_report_loras(params, loras);
+        h3_lora_set_free(loras);
+        loras = NULL;
     }
     if (ctx->cache_enabled && !dit_is_cached) {
         char *key_copy = strdup(prepared_key);
@@ -1788,6 +1845,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     result->seed = params->seed;
 
 cleanup:
+    h3_lora_set_free(loras);
     free(conditioning_key);
     free(prepared_key);
     free(decoder_key);

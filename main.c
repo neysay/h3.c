@@ -2,6 +2,8 @@
 #include "h3_cli.h"
 #include "h3_ffmpeg.h"
 #include "h3_host.h"
+#include "h3_lora.h"
+#include "h3_settings.h"
 #include "h3_terminal.h"
 
 #include <errno.h>
@@ -12,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 static void usage(const char *program) {
     fprintf(stderr,
@@ -47,6 +50,12 @@ static void usage(const char *program) {
         "      --use-slower-dynamic-fc1-k  Use runtime-bound FC1 K loop\n"
         "      --use-slower-grouped-quantizer  Force 256-thread FC2 quantizer\n"
         "      --seed N           Random seed (default: 42)\n"
+        "      --lora PATH[:S]    Apply a DiT LoRA at strength S (default 1);\n"
+        "                         repeatable, up to 8\n"
+        "      --no-lora          Drop LoRAs inherited from --settings\n"
+        "      --settings FILE    Start from a render's settings sidecar; other\n"
+        "                         flags override it (-o is never inherited)\n"
+        "      --no-token-reduction  Undo token reduction from --settings\n"
         "      --first-frame PATH First-frame conditioning image\n"
         "      --last-frame PATH  Last-frame conditioning image\n"
         "      --ref-image PATH    Append an ordered Ref2VA image\n"
@@ -301,7 +310,8 @@ int main(int argc, char **argv) {
            OPT_REF_VIDEO, OPT_REF_VIDEO_SIZE,
            OPT_REF_SILENT_VIDEO, OPT_REF_VIDEO_AUDIO,
            OPT_REF_AUDIO, OPT_FRAMES_DIR, OPT_PREVIEW_DIR, OPT_SHOW, OPT_ZOOM,
-           OPT_PROFILE, OPT_INFO };
+           OPT_PROFILE, OPT_INFO, OPT_LORA, OPT_NO_LORA, OPT_SETTINGS,
+           OPT_NO_TOKEN_REDUCTION };
     static const struct option options[] = {
         {"model-dir", required_argument, NULL, 'd'},
         {"prompt", required_argument, NULL, 'p'},
@@ -356,6 +366,10 @@ int main(int argc, char **argv) {
         {"zoom", required_argument, NULL, OPT_ZOOM},
         {"profile", no_argument, NULL, OPT_PROFILE},
         {"info", no_argument, NULL, OPT_INFO},
+        {"lora", required_argument, NULL, OPT_LORA},
+        {"no-lora", no_argument, NULL, OPT_NO_LORA},
+        {"settings", required_argument, NULL, OPT_SETTINGS},
+        {"no-token-reduction", no_argument, NULL, OPT_NO_TOKEN_REDUCTION},
         {"help", no_argument, NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
@@ -372,8 +386,51 @@ int main(int argc, char **argv) {
     int frames_given = 0;
     int seconds_given = 0;
     int seed_given = 0;
+    h3_lora loras[H3_MAX_LORAS];
+    size_t lora_count = 0;
+    int cli_loras = 0;
+    int cli_references = 0;
+    h3_settings settings;
+    memset(&settings, 0, sizeof(settings));
+    /* --settings is the base layer, so it is read before any other flag. */
+    for (int index = 1; index < argc; index++) {
+        const char *path = NULL;
+        if (!strcmp(argv[index], "--settings") && index + 1 < argc)
+            path = argv[index + 1];
+        else if (!strncmp(argv[index], "--settings=", 11))
+            path = argv[index] + 11;
+        if (!path) continue;
+        char detail[512];
+        if (!h3_settings_load(path, &settings, detail, sizeof(detail))) {
+            fprintf(stderr, "h3: %s\n", detail);
+            return 2;
+        }
+        model_dir = settings.model_dir;
+        prompt = settings.prompt;
+        params = settings.params;
+        memcpy(references, settings.references,
+               settings.reference_count * sizeof(*references));
+        reference_count = settings.reference_count;
+        memcpy(loras, settings.loras, settings.lora_count * sizeof(*loras));
+        lora_count = settings.lora_count;
+        seed_given = 1;
+        fprintf(stderr, "h3: settings from %s\n", path);
+        break;
+    }
     int option;
     while ((option = getopt_long(argc, argv, "d:p:o:h", options, NULL)) != -1) {
+        /* The first reference or LoRA flag replaces the inherited list. */
+        int reference_option = option == OPT_REF_IMAGE ||
+            option == OPT_REF_VIDEO || option == OPT_REF_SILENT_VIDEO ||
+            option == OPT_REF_VIDEO_AUDIO || option == OPT_REF_AUDIO;
+        if (reference_option && !cli_references) {
+            reference_count = 0;
+            cli_references = 1;
+        }
+        if (option == OPT_LORA && !cli_loras) {
+            lora_count = 0;
+            cli_loras = 1;
+        }
         switch (option) {
             case 'd': model_dir = optarg; break;
             case 'p': prompt = optarg; break;
@@ -525,6 +582,23 @@ int main(int argc, char **argv) {
                 break;
             case OPT_PROFILE: profile = 1; break;
             case OPT_INFO: info = 1; break;
+            case OPT_LORA:
+                if (lora_count >= H3_MAX_LORAS) {
+                    fprintf(stderr, "h3: at most %d LoRAs are supported\n",
+                            H3_MAX_LORAS);
+                    return 2;
+                }
+                if (!h3_settings_parse_lora(optarg, &loras[lora_count++])) {
+                    fprintf(stderr, "h3: --lora needs a path\n");
+                    return 2;
+                }
+                break;
+            case OPT_NO_LORA:
+                lora_count = 0;
+                cli_loras = 1;
+                break;
+            case OPT_SETTINGS: break;
+            case OPT_NO_TOKEN_REDUCTION: params.token_reduction = 0; break;
             default: usage(argv[0]); return 2;
         }
     }
@@ -544,6 +618,8 @@ int main(int argc, char **argv) {
     }
     params.references = references;
     params.reference_count = reference_count;
+    params.loras = lora_count ? loras : NULL;
+    params.lora_count = lora_count;
     if (cli.frames_dir && mkdir(cli.frames_dir, 0755) != 0 &&
         errno != EEXIST) {
         fprintf(stderr, "h3: cannot create frames directory %s: %s\n",
@@ -588,22 +664,40 @@ int main(int argc, char **argv) {
                 params.preview_denoise = 1;
             }
         }
+        struct timespec begin, end;
+        clock_gettime(CLOCK_MONOTONIC, &begin);
         h3_result *result = h3_generate(ctx, prompt, &params);
+        clock_gettime(CLOCK_MONOTONIC, &end);
         if (!result) {
             if (cli.active) fputc('\n', stderr);
             fprintf(stderr, "h3: %s\n", h3_last_error(ctx));
             h3_free(ctx);
+            h3_settings_free(&settings);
             return 1;
         }
+        if (output && *output) {
+            fprintf(stderr, "h3: wrote %s\n", output);
+            double elapsed = (double)(end.tv_sec - begin.tv_sec) +
+                (double)(end.tv_nsec - begin.tv_nsec) / 1e9;
+            char detail[512];
+            char *sidecar = h3_settings_path_for(output);
+            if (h3_settings_write(output, model_dir, prompt, &params, result,
+                                  elapsed, detail, sizeof(detail)))
+                fprintf(stderr, "h3: wrote %s\n", sidecar ? sidecar : "");
+            else
+                fprintf(stderr, "h3: warning: %s\n", detail);
+            free(sidecar);
+        }
         h3_result_free(result);
-        if (output && *output) fprintf(stderr, "h3: wrote %s\n", output);
         if (cli.frames_dir)
             fprintf(stderr, "h3: wrote frames to %s\n", cli.frames_dir);
     } else if (!info) {
         int cli_status = h3_cli_run(ctx, model_dir, &params, show, seed_given);
         h3_free(ctx);
+        h3_settings_free(&settings);
         return cli_status;
     }
     h3_free(ctx);
+    h3_settings_free(&settings);
     return 0;
 }

@@ -9,6 +9,7 @@
 struct h3_weight_store {
     h3_st_header *headers;
     size_t count;
+    h3_lora_set *loras;
 };
 
 static void fail(char *error, size_t error_size, const char *format, ...) {
@@ -122,6 +123,13 @@ void h3_weight_store_free(h3_weight_store *store) {
     free(store);
 }
 
+void h3_weight_store_set_loras(h3_weight_store *store, h3_lora_set *loras) {
+    if (!store) return;
+    if (store->loras && store->loras != loras)
+        h3_lora_set_release_gpu(store->loras);
+    store->loras = loras;
+}
+
 size_t h3_weight_store_shards(const h3_weight_store *store) {
     return store ? store->count : 0;
 }
@@ -181,7 +189,11 @@ static h3_gpu_tensor *load_tensor(const h3_weight_store *store, h3_gpu *gpu,
                                (size_t)elements);
     if (!result) {
         fail(error, error_size, "cannot load %s: %s", name, h3_gpu_error(gpu));
+        return NULL;
     }
+    if (store->loras)
+        result = h3_lora_set_patch(store->loras, gpu, name, dtype, result,
+                                   ndim, shape, error, error_size);
     return result;
 }
 

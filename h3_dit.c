@@ -1577,6 +1577,7 @@ static h3_dit *load_dit(const char *weight_directory,
                         int use_slower_dynamic_fc1_k,
                         int use_slower_grouped_quantizer,
                         int use_int8_row_fc2,
+                        h3_lora_set *loras,
                         const float *condition_video_rows,
                         size_t condition_video_elements,
                         const float *condition_audio_rows,
@@ -1625,8 +1626,14 @@ static h3_dit *load_dit(const char *weight_directory,
         goto failed;
     }
     dit->sigmas = *sigmas;
+    if (loras && ssd_streaming) {
+        fail(error, error_size, "LoRAs patch resident weights and cannot be "
+             "combined with SSD streaming");
+        goto failed;
+    }
     dit->weights = h3_weight_store_open(weight_directory, error, error_size);
     if (!dit->weights) goto failed;
+    h3_weight_store_set_loras(dit->weights, loras);
     dit->gpu = h3_gpu_create(shader_source_path, error, error_size);
     if (!dit->gpu) goto failed;
     dit->nax_mlp = dit->fused_mlp && h3_gpu_has_nax_mlp(dit->gpu);
@@ -1692,8 +1699,10 @@ static h3_dit *load_dit(const char *weight_directory,
         goto failed;
     }
     h3_gpu_profile_mark(dit->gpu, "load");
+    h3_weight_store_set_loras(dit->weights, NULL);
     return dit;
 failed:
+    h3_weight_store_set_loras(dit->weights, NULL);
     h3_dit_free(dit);
     return NULL;
 }
@@ -1719,6 +1728,7 @@ h3_dit *h3_dit_load_t2va(const char *weight_directory,
                          int use_slower_dynamic_fc1_k,
                          int use_slower_grouped_quantizer,
                          int use_int8_row_fc2,
+                         h3_lora_set *loras,
                          h3_dit_progress progress, void *progress_opaque,
                          char *error, size_t error_size) {
     return load_dit(weight_directory, shader_source_path, text, layout, sigmas,
@@ -1734,7 +1744,7 @@ h3_dit *h3_dit_load_t2va(const char *weight_directory,
                     use_slower_uncached_int8_scales,
                     use_slower_dynamic_fc1_k,
                     use_slower_grouped_quantizer,
-                    use_int8_row_fc2,
+                    use_int8_row_fc2, loras,
                     NULL, 0, NULL, 0, progress, progress_opaque,
                     error, error_size);
 }
@@ -1761,6 +1771,7 @@ h3_dit *h3_dit_load_conditioned(
                          int use_slower_dynamic_fc1_k,
                          int use_slower_grouped_quantizer,
                          int use_int8_row_fc2,
+                         h3_lora_set *loras,
                          const float *condition_video_rows,
                          size_t condition_video_elements,
                          const float *condition_audio_rows,
@@ -1780,7 +1791,7 @@ h3_dit *h3_dit_load_conditioned(
                     use_slower_uncached_int8_scales,
                     use_slower_dynamic_fc1_k,
                     use_slower_grouped_quantizer,
-                    use_int8_row_fc2,
+                    use_int8_row_fc2, loras,
                     condition_video_rows, condition_video_elements,
                     condition_audio_rows, condition_audio_elements,
                     progress, progress_opaque, error, error_size);

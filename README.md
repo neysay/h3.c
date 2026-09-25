@@ -403,44 +403,81 @@ Standalone audio must accompany an image or video reference. Audio references
 must be 2–15 seconds; at most three audio inputs are accepted and their total
 decoded duration is capped at 15 seconds.
 
-## Distilled sampling: fold the Turbo LoRA into the checkpoint
+## LoRAs and distilled sampling
 
-h3.c does not implement a LoRA runtime; step-distillation adapters can instead
-be folded into the checkpoint before inference. `tools/fold_turbo_lora.py`
-applies
-[larryvrh/MiniMax-H3-Turbo-Lora](https://huggingface.co/larryvrh/MiniMax-H3-Turbo-Lora)
-directly to the bf16 shards. The adapter file,
-`minimax_h3_turbo_v4_step600_ema.safetensors`, is Apache-2.0 and remains subject
-to the MiniMax H3 Community License as a derivative. The tool clones the
-original shards and patches only the affected byte ranges. The headers and
-tensor order remain unchanged, as does their alignment:
+`--lora PATH[:STRENGTH]` applies a DiT adapter while the transformer loads.
+The checkpoint on disk is never modified, so adapters can be swapped per
+render without a folded copy of the weights. Repeat the flag to stack up to
+eight adapters; `!lora PATH[:STRENGTH]` and `!lora clear` do the same in an
+interactive session.
 
 ```sh
-python3 tools/fold_turbo_lora.py \
-  --checkpoint ./MiniMax-H3/FL2VA/transformer \
-  --lora ./minimax_h3_turbo_v4_step600_ema.safetensors \
-  --out ./MiniMax-H3-turbo/FL2VA/transformer
+./h3 -d ./MiniMax-H3 -p "<prompt>" --width 960 --height 544 --frames 124 \
+  --steps 6 --lora ./minimax_h3_turbo_v4_step600_ema.safetensors \
+  -o outputs/turbo.mp4
 ```
 
-Point `-d` at a model directory whose `FL2VA/transformer` contains the folded
-tree; everything else can be symlinked to the original snapshot. Sample with
-`--steps 5` or `--steps 6` and no other speed flags. The distilled schedule
-removes the redundancy used by `--reuse` and `--core-reuse`, so neither option
-should be combined with it. On fast action, 4 steps showed motion smear; 5 is
-the validated floor.
+Three key layouts are recognised and mapped onto the released checkpoint:
 
-Cold single-shot measurements on an M5 Max used 960x544 and an identical prompt
-and seed. The comparison is against the tutorial's
-`--steps 20 --reuse 2 --layers 45` preset:
+| Layout | Examples | Notes |
+|---|---|---|
+| native (reference / ComfyUI / kohya) | larryvrh Turbo, lightx2v `*_comfyui_*` | `blocks.N.attn.qkv_proj`, `lora_A`/`lora_B` or `lora_down`/`lora_up` + `.alpha` |
+| diffusers / PEFT | lightx2v `*_bf16`, FastVideo FastH3 | `transformer_blocks.N.attn.to_q`, `ff.net.0.proj`, optional `.default.` infix |
+| full-weight deltas | FastVideo FastH3 | `.diff` / `.diff_b` added to weights and biases |
 
-| | balanced preset | folded turbo, 6 steps |
-|---|---:|---:|
-| 39 frames | 87s | 65s |
-| 124-frame (5 s) clip | 8.8min | 6.2min |
+The released checkpoint stores fused QKV rows interleaved per head
+(`[h0: q k v, h1: q k v, ...]`) and SwiGLU FC1 as `[gate; value]`. Adapters
+trained through the reference loader or ComfyUI use `[q; k; v]`, and diffusers
+splits QKV into `to_q`/`to_k`/`to_v` and stores FC1 as `[value; gate]`; every
+delta is reordered to the checkpoint layout. Only DiffSynth-Studio adapters
+(recognised by PEFT's `.default.` infix on native names) train on the raw
+interleaved QKV. The scale is `alpha / rank` from per-module `.alpha`
+tensors, else from an `alpha` metadata entry, else 1, multiplied by the
+requested strength. Unknown keys fail the render rather than being skipped.
 
-On the clips tested, quality at 5-6 steps was comparable to the balanced preset,
-with sharper fine detail as the adapter's card advertises. An interactive
-session also amortizes transformer loading and text encoding across renders.
+All low-rank parts that target one tensor, across every adapter, are stacked
+along the rank axis into a single GPU product, accumulated in F32 over the
+checkpoint tensor and rounded once to nearest even, in place in the loaded
+buffer; the copy-on-write mapping keeps the files on disk untouched. On an
+M5 Max with a warm file cache, the three adapters above added 4-6 s to a
+10-12 s DiT load (the pass pre-touches pages the load reads anyway). An
+interactive session pays this once, since the patched DiT stays resident.
+LoRAs cannot be combined with `--ssd-streaming`.
+
+Distilled adapters sample with `--steps 4`-`6` and no other speed flags; the
+distilled schedule removes the redundancy used by `--reuse` and
+`--core-reuse`. Adapters are trained against specific schedules: h3.c uses a
+video sigma shift of 12, while lightx2v's 768p DMD configs use 6.
+
+`tools/fold_turbo_lora.py` still bakes an adapter into a standalone checkpoint
+copy (about 62 GB per variant, since patched ranges break APFS copy-on-write).
+Checkpoints folded by versions of the tool before the QKV reordering fix added
+QKV deltas to the wrong rows and should be refolded or replaced by `--lora`.
+
+## Settings sidecars and re-rendering
+
+Every render writes `<output>.json` next to the MP4 with everything needed to
+reproduce it: prompt, seed, canvas, frames, sampler flags, references, anchors,
+LoRAs and strengths (paths made absolute), plus the git commit, result shape
+and wall time. Keys are the CLI's long option names.
+
+`--settings FILE` starts from a sidecar; any other flag overrides it. The
+first `--ref-*` or `--lora` flag replaces the inherited list, `--no-lora`
+clears inherited adapters, and `--no-token-reduction` turns that flag back
+off. `-o` is never inherited, so a re-render cannot overwrite its source.
+Unknown keys are errors, so a typo in a hand-edited file cannot fall back to
+a default silently.
+
+```sh
+# explore cheaply, then re-render the keeper with more effort
+./h3 -d ./MiniMax-H3 -p "<prompt>" --seed 7 --steps 4 \
+  --lora ./turbo.safetensors -o outputs/draft.mp4
+./h3 --settings outputs/draft.json --no-lora --steps 20 -o outputs/final.mp4
+```
+
+Replaying a sidecar unchanged reproduces the render byte for byte. The
+interactive session writes a sidecar for every video, and `!save` copies it
+alongside the MP4.
 
 ## Tests and runtime requirements
 

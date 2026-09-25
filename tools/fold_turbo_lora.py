@@ -7,6 +7,17 @@ original shards (copy-on-write where the filesystem supports it) and rewrites
 only the byte ranges of the targeted tensors, so headers, tensor order, and
 alignment stay byte-identical to the originals.
 
+Prefer `h3 --lora PATH[:SCALE]`, which applies adapters at load time without
+a 62 GB checkpoint copy and also understands diffusers/PEFT keys. This tool
+remains for producing a standalone folded checkpoint.
+
+The released checkpoint stores fused QKV rows interleaved per head
+([h0: q k v, h1: q k v, ...]) while adapters trained through the reference
+loader or ComfyUI use [q_all; k_all; v_all]. QKV deltas are reordered to the
+checkpoint layout before folding; pass --qkv-interleaved only for adapters
+trained on the raw interleaved layout (DiffSynth-Studio). Checkpoints folded
+by earlier versions of this tool added QKV deltas to the wrong rows.
+
 Folding the 4-step Turbo distillation adapter this way enables 5-6 step
 sampling at zero runtime cost. Measured on an M5 Max (960x544, identical
 prompt/seed): 39 frames 87s -> 65s and a 5s clip 8.8min -> 6.2min versus the
@@ -63,6 +74,16 @@ def f32_to_bf16_bytes(x):
     return rounded.astype("<u2").tobytes()
 
 
+def grouped_to_interleaved(delta, head_dim=128):
+    """[q_all; k_all; v_all] rows -> per-head [q k v] rows."""
+    rows, columns = delta.shape
+    if rows % (3 * head_dim):
+        raise SystemExit(f"QKV delta has {rows} rows, not a fused projection")
+    heads = rows // (3 * head_dim)
+    parts = delta.reshape(3, heads, head_dim, columns)
+    return parts.transpose(1, 0, 2, 3).reshape(rows, columns)
+
+
 def clone(src, dst):
     if subprocess.run(["cp", "-c", str(src), str(dst)],
                       capture_output=True).returncode != 0:
@@ -78,6 +99,9 @@ def main():
     ap.add_argument("--out", required=True, type=Path,
                     help="output directory for the folded shards")
     ap.add_argument("--scale", type=float, default=1.0)
+    ap.add_argument("--qkv-interleaved", action="store_true",
+                    help="adapter QKV rows already use the checkpoint's "
+                         "per-head interleaved layout (DiffSynth-Studio)")
     args = ap.parse_args()
 
     lhl, lora_hdr = read_header(args.lora)
@@ -118,6 +142,8 @@ def main():
                 A = load_tensor(args.lora, lora_hdr[a_key], lora_base)
                 B = load_tensor(args.lora, lora_hdr[b_key], lora_base)
                 W = load_tensor(dst, info, base)
+                if key.endswith("attn.qkv_proj.weight") and not args.qkv_interleaved:
+                    B = grouped_to_interleaved(B)
                 folded = W + args.scale * (B.astype(np.float32) @ A.astype(np.float32))
                 # parity check on a random probe before committing bytes
                 x = np.random.default_rng(0).standard_normal(W.shape[1]).astype(np.float32)

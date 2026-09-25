@@ -850,6 +850,11 @@ int h3_gpu_tensor_read_f32_range(const h3_gpu_tensor *tensor,
     return 1;
 }
 
+void *h3_gpu_tensor_host_data(h3_gpu_tensor *tensor) {
+    if (!tensor) return NULL;
+    return TENSOR(tensor).buffer.contents;
+}
+
 int h3_gpu_tensor_read_bf16(const h3_gpu_tensor *tensor, uint16_t *values,
                             size_t elements) {
     if (!tensor || !values || TENSOR(tensor).dtype != H3_GPU_BF16 ||

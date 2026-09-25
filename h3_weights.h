@@ -2,6 +2,7 @@
 #define H3_WEIGHTS_H
 
 #include "h3_gpu.h"
+#include "h3_lora.h"
 #include "h3_safetensors.h"
 
 #include <stddef.h>
@@ -14,6 +15,9 @@ typedef struct h3_weight_store h3_weight_store;
 h3_weight_store *h3_weight_store_open(const char *directory,
                                       char *error, size_t error_size);
 void h3_weight_store_free(h3_weight_store *store);
+/* Patch every subsequently loaded tensor with the adapters that target it.
+ * The store does not own the set; pass NULL to detach it. */
+void h3_weight_store_set_loras(h3_weight_store *store, h3_lora_set *loras);
 size_t h3_weight_store_shards(const h3_weight_store *store);
 
 const h3_st_tensor *h3_weight_find(const h3_weight_store *store,
