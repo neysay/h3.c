@@ -2,11 +2,13 @@
 #include "h3_audio_vae.h"
 #include "h3_host.h"
 #include "h3_dit.h"
+#include "h3_log.h"
 #include "h3_lora.h"
 #include "h3_ffmpeg.h"
 #include "h3_metal.h"
 #include "h3_multimodal.h"
 #include "h3_safetensors.h"
+#include "h3_stages.h"
 #include "h3_text_encoder.h"
 #include "h3_tokenizer.h"
 #include "h3_video_encoder.h"
@@ -163,12 +165,16 @@ failed:
     return NULL;
 }
 
+/* Report what each adapter did, and keep it for the result. */
 static void h3_report_loras(const h3_params *params,
-                            const h3_lora_set *loras) {
+                            const h3_lora_set *loras,
+                            h3_lora_report *reports, size_t *report_count,
+                            double *apply_seconds) {
+    *report_count = 0;
     for (size_t index = 0; index < h3_lora_set_count(loras); index++) {
         h3_lora_stats stats;
         h3_lora_set_stats(loras, index, &stats);
-        fprintf(stderr,
+        h3_log(H3_LOG_INFO,
                 "h3: LoRA %s (%s): %zu low-rank + %zu full deltas, "
                 "scale %.4g x strength %.3g, patched %zu/%zu tensors\n",
                 params->loras[index].path, stats.format, stats.low_rank,
@@ -176,11 +182,18 @@ static void h3_report_loras(const h3_params *params,
                 (double)params->loras[index].scale, stats.applied,
                 stats.targets);
         if (stats.applied < stats.targets && params->dit_layers >= 50)
-            fprintf(stderr, "h3: warning: %zu LoRA target tensors were never "
-                    "loaded\n", stats.targets - stats.applied);
+            h3_log(H3_LOG_WARNING, "h3: warning: %zu LoRA target tensors "
+                    "were never loaded\n", stats.targets - stats.applied);
+        if (index < H3_MAX_LORAS) {
+            reports[index] = (h3_lora_report){
+                params->loras[index].path, params->loras[index].scale,
+                stats.format, stats.low_rank, stats.full_deltas,
+                stats.targets, stats.applied, stats.scale};
+            *report_count = index + 1;
+        }
     }
-    fprintf(stderr, "h3: LoRA apply %.2f s\n",
-            h3_lora_set_apply_seconds(loras));
+    *apply_seconds = h3_lora_set_apply_seconds(loras);
+    h3_log(H3_LOG_INFO, "h3: LoRA apply %.2f s\n", *apply_seconds);
 }
 
 static char *h3_prepared_key(const char *conditioning,
@@ -692,13 +705,22 @@ typedef struct {
     h3_ctx *ctx;
     const h3_params *params;
     int cancelled;
+    /* Stage boundaries for on_stage, fed by the same counters. */
+    h3_stage_tracker stages;
 } h3_generation_progress;
 
 static void h3_progress_emit(h3_generation_progress *state, const char *phase,
                              int completed, int total) {
-    if (!state || state->cancelled || !state->params->on_progress) return;
-    if (state->params->on_progress(phase, completed, total,
-                                   state->params->callback_opaque)) {
+    if (!state || state->cancelled) return;
+    int stop = 0;
+    if (state->params->on_progress &&
+        state->params->on_progress(phase, completed, total,
+                                   state->params->callback_opaque))
+        stop = 1;
+    if (state->params->on_stage &&
+        h3_stage_tracker_progress(&state->stages, phase, completed, total))
+        stop = 1;
+    if (stop) {
         state->cancelled = 1;
         h3_set_error(state->ctx, "generation cancelled during %s", phase);
     }
@@ -756,7 +778,7 @@ static h3_video_vae_decoder *h3_acquire_video_decoder(
     if (ctx->cache_enabled && ctx->video_decoder &&
         ctx->video_decoder_key && !strcmp(ctx->video_decoder_key, key)) {
         *cached = 1;
-        fprintf(stderr, "h3: video VAE cache hit\n");
+        h3_log(H3_LOG_INFO, "h3: video VAE cache hit\n");
         return ctx->video_decoder;
     }
     if (ctx->cache_enabled) {
@@ -771,13 +793,13 @@ static h3_video_vae_decoder *h3_acquire_video_decoder(
     if (!decoder || !ctx->cache_enabled) return decoder;
     char *key_copy = strdup(key);
     if (!key_copy) {
-        fprintf(stderr, "h3: warning: could not retain video VAE cache key\n");
+        h3_log(H3_LOG_WARNING, "h3: warning: could not retain video VAE cache key\n");
         return decoder;
     }
     ctx->video_decoder = decoder;
     ctx->video_decoder_key = key_copy;
     *cached = 1;
-    fprintf(stderr, "h3: video VAE cache miss; decoder retained\n");
+    h3_log(H3_LOG_INFO, "h3: video VAE cache miss; decoder retained\n");
     return decoder;
 }
 
@@ -962,7 +984,15 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         h3_set_error(ctx, "ordered references require the Ref2VA checkpoint");
         return NULL;
     }
-    h3_generation_progress progress = {ctx, params, 0};
+    h3_generation_progress progress;
+    memset(&progress, 0, sizeof(progress));
+    progress.ctx = ctx;
+    progress.params = params;
+    h3_stage_tracker_init(&progress.stages, params->on_stage,
+                          params->callback_opaque);
+    h3_lora_report lora_reports[H3_MAX_LORAS];
+    size_t lora_report_count = 0;
+    double lora_apply_seconds = 0.0;
     h3_temporal_shape temporal = h3_temporal(params->frames);
     int latent_w, latent_h;
     h3_latent_canvas(render_width, render_height, &latent_w, &latent_h);
@@ -1079,7 +1109,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             if (params->last_frame)
                 keyframes[keyframe_count++] = temporal.frame_count - 1;
         }
-        fprintf(stderr, "h3: conditioning cache hit\n");
+        h3_log(H3_LOG_INFO, "h3: conditioning cache hit\n");
     } else {
     if (visual_capacity) {
         condition_pixels = calloc(visual_capacity, sizeof(*condition_pixels));
@@ -1188,7 +1218,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                                              detail, sizeof(detail)) &&
                     clip_seconds * H3_FPS >
                         (double)condition_frames[visual_count] + 17.0) {
-                    fprintf(stderr,
+                    h3_log(H3_LOG_WARNING,
                             "h3: warning: reference video %zu runs %.1fs; "
                             "only its first %d frames (%.1fs) condition the "
                             "render\n", index + 1, clip_seconds,
@@ -1267,7 +1297,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                  * remaining budget instead of failing a legal request. */
                 size_t audio_budget = (size_t)32000 * 15 - total_audio_samples;
                 if ((size_t)max_samples > audio_budget) {
-                    fprintf(stderr,
+                    h3_log(H3_LOG_WARNING,
                             "h3: warning: video soundtrack %zu trimmed to "
                             "%.1fs to fit the 15-second reference audio "
                             "budget\n", index + 1,
@@ -1574,9 +1604,9 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
                 condition_audio_rows, condition_audio_elements,
                 layout_references, ref2va ? params->reference_count : 0,
                 conditioned))
-            fprintf(stderr, "h3: warning: could not retain conditioning cache\n");
+            h3_log(H3_LOG_WARNING, "h3: warning: could not retain conditioning cache\n");
         else
-            fprintf(stderr, "h3: conditioning cache miss; stored exact BF16\n");
+            h3_log(H3_LOG_INFO, "h3: conditioning cache miss; stored exact BF16\n");
     }
     }
     if (conditioned && !h3_augment_conditions(
@@ -1615,7 +1645,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
             h3_set_error(ctx, "%s", detail);
             goto cleanup;
         }
-        fprintf(stderr, "h3: prepared DiT cache hit\n");
+        h3_log(H3_LOG_INFO, "h3: prepared DiT cache hit\n");
     } else if (params->lora_count &&
                !(loras = h3_lora_set_open(params->loras, params->lora_count,
                                           detail, sizeof(detail)))) {
@@ -1666,19 +1696,20 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         goto cleanup;
     }
     if (loras) {
-        h3_report_loras(params, loras);
+        h3_report_loras(params, loras, lora_reports, &lora_report_count,
+                        &lora_apply_seconds);
         h3_lora_set_free(loras);
         loras = NULL;
     }
     if (ctx->cache_enabled && !dit_is_cached) {
         char *key_copy = strdup(prepared_key);
         if (!key_copy) {
-            fprintf(stderr, "h3: warning: could not retain prepared DiT key\n");
+            h3_log(H3_LOG_WARNING, "h3: warning: could not retain prepared DiT key\n");
         } else {
             ctx->dit = dit;
             ctx->dit_key = key_copy;
             dit_is_cached = 1;
-            fprintf(stderr, "h3: prepared DiT cache miss; model retained\n");
+            h3_log(H3_LOG_INFO, "h3: prepared DiT cache miss; model retained\n");
         }
     }
     h3_text_embedding_free(&text);
@@ -1843,6 +1874,21 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     result->fps = H3_FPS;
     result->sample_rate = waveform.sample_rate;
     result->seed = params->seed;
+    if (lora_report_count) {
+        result->loras = malloc(lora_report_count * sizeof(*result->loras));
+        if (!result->loras) {
+            h3_set_error(ctx, "out of memory recording LoRA reports");
+            free(result);
+            result = NULL;
+            goto cleanup;
+        }
+        memcpy(result->loras, lora_reports,
+               lora_report_count * sizeof(*result->loras));
+        result->lora_count = lora_report_count;
+    }
+    result->lora_apply_seconds = lora_apply_seconds;
+    /* The render is complete: close the last stage (the mux). */
+    h3_stage_tracker_finish(&progress.stages);
 
 cleanup:
     h3_lora_set_free(loras);
@@ -1883,5 +1929,6 @@ cleanup:
 }
 
 void h3_result_free(h3_result *result) {
+    if (result) free(result->loras);
     free(result);
 }

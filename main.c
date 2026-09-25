@@ -1,7 +1,10 @@
 #include "h3.h"
+#include "h3_build_info.h"
 #include "h3_cli.h"
+#include "h3_events.h"
 #include "h3_ffmpeg.h"
 #include "h3_host.h"
+#include "h3_log.h"
 #include "h3_lora.h"
 #include "h3_settings.h"
 #include "h3_terminal.h"
@@ -55,6 +58,10 @@ static void usage(const char *program) {
         "      --no-lora          Drop LoRAs inherited from --settings\n"
         "      --settings FILE    Start from a render's settings sidecar; other\n"
         "                         flags override it (-o is never inherited)\n"
+        "      --no-settings      Do not write the output's settings sidecar\n"
+        "      --events-fd N      Write the job as JSON-lines events to open\n"
+        "                         descriptor N (docs/events.md); stderr then\n"
+        "                         carries only output from outside h3\n"
         "      --no-token-reduction  Undo token reduction from --settings\n"
         "      --first-frame PATH First-frame conditioning image\n"
         "      --last-frame PATH  Last-frame conditioning image\n"
@@ -139,6 +146,7 @@ static void print_info(const h3_ctx *ctx) {
     const h3_device_info *device = h3_device(ctx);
     const h3_model_info *model = h3_model(ctx);
     printf("h3-metal %s\n", H3_VERSION);
+    printf("events protocol: %d\n", H3_EVENTS_PROTOCOL);
     printf("Device: %s (%s)\n", device->name, device->architecture);
     printf("  physical memory       %.1f GiB\n", gib(device->physical_memory));
     printf("  recommended GPU set   %.1f GiB\n", gib(device->recommended_working_set));
@@ -166,7 +174,16 @@ typedef struct {
     const char *preview_dir;
     int preview_write_failed;
     int preview_count;
+    /* Set in events mode: previews become artifact events. */
+    h3_events *events;
 } cli_state;
+
+/* Events mode reports stage boundaries in place of the progress bar. */
+static int cli_stage(const h3_stage_event *event, void *opaque) {
+    cli_state *state = opaque;
+    h3_events_stage(state->events, event);
+    return 0;
+}
 
 static int cli_progress(const char *phase, int completed, int total,
                         void *opaque) {
@@ -198,7 +215,7 @@ static int cli_frame(const h3_frame *frame, void *opaque) {
         if (!output ||
             fprintf(output, "P6\n%d %d\n255\n", frame->width,
                     frame->height) < 0) {
-            fprintf(stderr, "h3: cannot write frame %d to %s\n",
+            h3_log(H3_LOG_ERROR, "h3: cannot write frame %d to %s\n",
                     frame->frame_index, state->frames_dir);
             if (output) fclose(output);
             state->frame_write_failed = 1;
@@ -213,7 +230,7 @@ static int cli_frame(const h3_frame *frame, void *opaque) {
             }
             if (fclose(output) != 0) state->frame_write_failed = 1;
             if (state->frame_write_failed)
-                fprintf(stderr, "h3: incomplete frame %d in %s\n",
+                h3_log(H3_LOG_ERROR, "h3: incomplete frame %d in %s\n",
                         frame->frame_index, state->frames_dir);
         }
     }
@@ -254,10 +271,14 @@ static int cli_frame(const h3_frame *frame, void *opaque) {
         }
         if (written) {
             state->preview_count++;
-            fprintf(stderr, "h3: preview %s\n", path);
+            if (state->events)
+                h3_events_artifact(state->events, H3_ARTIFACT_PREVIEW, path);
+            else
+                fprintf(stderr, "h3: preview %s\n", path);
         } else {
             state->preview_write_failed = 1;
-            fprintf(stderr, "h3: denoise previews disabled: %s\n", detail);
+            h3_log(H3_LOG_WARNING, "h3: denoise previews disabled: %s\n",
+                   detail);
         }
     }
     if (state->frame_write_failed) return 1;
@@ -286,6 +307,27 @@ static int cli_frame(const h3_frame *frame, void *opaque) {
     return 0;
 }
 
+static double seconds_since(const struct timespec *start) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)(now.tv_sec - start->tv_sec) +
+        (double)(now.tv_nsec - start->tv_nsec) / 1e9;
+}
+
+/* A run that fails after argument parsing: the reason goes to stderr as
+ * always, or, in events mode, into the stream's job.end. */
+static int fail_run(h3_events *events, const char *error,
+                    const struct timespec *started) {
+    if (events) {
+        h3_events_failed(events, error, seconds_since(started));
+        h3_set_log_callback(NULL, NULL);
+        h3_events_close(events);
+    } else {
+        fprintf(stderr, "h3: %s\n", error);
+    }
+    return 1;
+}
+
 int main(int argc, char **argv) {
     enum { OPT_WIDTH = 1000, OPT_HEIGHT, OPT_RENDER_WIDTH, OPT_RENDER_HEIGHT,
            OPT_FRAMES, OPT_SECONDS, OPT_STEPS, OPT_REUSE,
@@ -311,7 +353,7 @@ int main(int argc, char **argv) {
            OPT_REF_SILENT_VIDEO, OPT_REF_VIDEO_AUDIO,
            OPT_REF_AUDIO, OPT_FRAMES_DIR, OPT_PREVIEW_DIR, OPT_SHOW, OPT_ZOOM,
            OPT_PROFILE, OPT_INFO, OPT_LORA, OPT_NO_LORA, OPT_SETTINGS,
-           OPT_NO_TOKEN_REDUCTION };
+           OPT_NO_TOKEN_REDUCTION, OPT_NO_SETTINGS, OPT_EVENTS_FD };
     static const struct option options[] = {
         {"model-dir", required_argument, NULL, 'd'},
         {"prompt", required_argument, NULL, 'p'},
@@ -370,6 +412,8 @@ int main(int argc, char **argv) {
         {"no-lora", no_argument, NULL, OPT_NO_LORA},
         {"settings", required_argument, NULL, OPT_SETTINGS},
         {"no-token-reduction", no_argument, NULL, OPT_NO_TOKEN_REDUCTION},
+        {"no-settings", no_argument, NULL, OPT_NO_SETTINGS},
+        {"events-fd", required_argument, NULL, OPT_EVENTS_FD},
         {"help", no_argument, NULL, 'h'},
         {NULL, 0, NULL, 0}
     };
@@ -379,7 +423,7 @@ int main(int argc, char **argv) {
     h3_params params = H3_PARAMS_DEFAULT;
     h3_reference references[12];
     size_t reference_count = 0;
-    cli_state cli = {{0}, 0, -1, -1, H3_TERM_NONE, 0, NULL, 0, NULL, 0, 0};
+    cli_state cli = {{0}, 0, -1, -1, H3_TERM_NONE, 0, NULL, 0, NULL, 0, 0, NULL};
     int show = 0;
     int profile = 0;
     int info = 0;
@@ -390,6 +434,17 @@ int main(int argc, char **argv) {
     size_t lora_count = 0;
     int cli_loras = 0;
     int cli_references = 0;
+    int write_settings = 1;
+    int events_fd = -1;
+    h3_events *events = NULL;
+    /* Events mode must keep h3's own words off stderr from the first one,
+     * so it is known before the --settings pre-pass reports its source. */
+    int events_requested = 0;
+    for (int index = 1; index < argc; index++)
+        if (!strcmp(argv[index], "--events-fd") ||
+            !strncmp(argv[index], "--events-fd=", 12))
+            events_requested = 1;
+    const char *settings_from = NULL;
     h3_settings settings;
     memset(&settings, 0, sizeof(settings));
     /* --settings is the base layer, so it is read before any other flag. */
@@ -414,7 +469,8 @@ int main(int argc, char **argv) {
         memcpy(loras, settings.loras, settings.lora_count * sizeof(*loras));
         lora_count = settings.lora_count;
         seed_given = 1;
-        fprintf(stderr, "h3: settings from %s\n", path);
+        if (events_requested) settings_from = path;
+        else fprintf(stderr, "h3: settings from %s\n", path);
         break;
     }
     int option;
@@ -599,6 +655,10 @@ int main(int argc, char **argv) {
                 break;
             case OPT_SETTINGS: break;
             case OPT_NO_TOKEN_REDUCTION: params.token_reduction = 0; break;
+            case OPT_NO_SETTINGS: write_settings = 0; break;
+            case OPT_EVENTS_FD:
+                events_fd = parse_int(optarg, "events fd");
+                break;
             default: usage(argv[0]); return 2;
         }
     }
@@ -610,9 +670,25 @@ int main(int argc, char **argv) {
         fprintf(stderr, "h3: --seconds and --frames are mutually exclusive\n");
         return 2;
     }
+    struct timespec started;
+    clock_gettime(CLOCK_MONOTONIC, &started);
+    /* One-shot renders only: the interactive session and --info keep their
+     * terminal output. From here on h3's own messages are events. */
+    if (events_fd >= 0 && prompt) {
+        events = h3_events_open(events_fd, H3_VERSION, H3_GIT_COMMIT);
+        if (!events) {
+            fprintf(stderr, "h3: --events-fd %d is not open for writing\n",
+                    events_fd);
+            return 2;
+        }
+        h3_set_log_callback(h3_events_log_callback, events);
+        cli.events = events;
+        if (settings_from)
+            h3_log(H3_LOG_INFO, "h3: settings from %s\n", settings_from);
+    }
     if (prompt && params.steps >= 2 && params.steps <= 7 &&
         params.denoise_reuse > 1) {
-        fprintf(stderr,
+        h3_log(H3_LOG_WARNING,
             "h3: warning: --reuse with only %d denoising steps leaves very "
             "few fresh model evaluations\n", params.steps);
     }
@@ -622,27 +698,31 @@ int main(int argc, char **argv) {
     params.lora_count = lora_count;
     if (cli.frames_dir && mkdir(cli.frames_dir, 0755) != 0 &&
         errno != EEXIST) {
-        fprintf(stderr, "h3: cannot create frames directory %s: %s\n",
-                cli.frames_dir, strerror(errno));
-        return 1;
+        char message[1024];
+        snprintf(message, sizeof(message),
+                 "cannot create frames directory %s: %s", cli.frames_dir,
+                 strerror(errno));
+        return fail_run(events, message, &started);
     }
     if (cli.preview_dir && mkdir(cli.preview_dir, 0755) != 0 &&
         errno != EEXIST) {
-        fprintf(stderr, "h3: cannot create preview directory %s: %s\n",
-                cli.preview_dir, strerror(errno));
-        return 1;
+        char message[1024];
+        snprintf(message, sizeof(message),
+                 "cannot create preview directory %s: %s", cli.preview_dir,
+                 strerror(errno));
+        return fail_run(events, message, &started);
     }
     if (profile) setenv("H3_PROFILE", "1", 1);
     h3_ctx *ctx = h3_load_dir(model_dir);
-    if (!ctx) {
-        fprintf(stderr, "h3: %s\n", h3_last_error(NULL));
-        return 1;
-    }
+    if (!ctx) return fail_run(events, h3_last_error(NULL), &started);
     if (info) print_info(ctx);
+    h3_result *finished = NULL;
+    char *finished_sidecar = NULL;
     if (prompt) {
         params.output_path = output;
-        params.on_progress = cli_progress;
         params.callback_opaque = &cli;
+        if (events) params.on_stage = cli_stage;
+        else params.on_progress = cli_progress;
         if (cli.frames_dir) params.on_frame = cli_frame;
         if (cli.preview_dir) {
             /* Unlike --show, the file sink needs no graphics terminal, and it
@@ -670,27 +750,55 @@ int main(int argc, char **argv) {
         clock_gettime(CLOCK_MONOTONIC, &end);
         if (!result) {
             if (cli.active) fputc('\n', stderr);
-            fprintf(stderr, "h3: %s\n", h3_last_error(ctx));
+            int status = fail_run(events, h3_last_error(ctx), &started);
             h3_free(ctx);
             h3_settings_free(&settings);
-            return 1;
+            return status;
         }
+        char *sidecar = NULL;
         if (output && *output) {
-            fprintf(stderr, "h3: wrote %s\n", output);
+            if (events) h3_events_artifact(events, H3_ARTIFACT_VIDEO, output);
+            else fprintf(stderr, "h3: wrote %s\n", output);
             double elapsed = (double)(end.tv_sec - begin.tv_sec) +
                 (double)(end.tv_nsec - begin.tv_nsec) / 1e9;
             char detail[512];
-            char *sidecar = h3_settings_path_for(output);
-            if (h3_settings_write(output, model_dir, prompt, &params, result,
-                                  elapsed, detail, sizeof(detail)))
-                fprintf(stderr, "h3: wrote %s\n", sidecar ? sidecar : "");
-            else
-                fprintf(stderr, "h3: warning: %s\n", detail);
-            free(sidecar);
+            if (write_settings) {
+                sidecar = h3_settings_path_for(output);
+                if (h3_settings_write(output, model_dir, prompt, &params,
+                                      result, elapsed, detail,
+                                      sizeof(detail))) {
+                    if (events)
+                        h3_events_artifact(events, H3_ARTIFACT_SETTINGS,
+                                           sidecar);
+                    else
+                        fprintf(stderr, "h3: wrote %s\n",
+                                sidecar ? sidecar : "");
+                } else {
+                    h3_log(H3_LOG_WARNING, "h3: warning: %s\n", detail);
+                    free(sidecar);
+                    sidecar = NULL;
+                }
+            }
         }
-        h3_result_free(result);
-        if (cli.frames_dir)
-            fprintf(stderr, "h3: wrote frames to %s\n", cli.frames_dir);
+        if (cli.frames_dir) {
+            if (events)
+                h3_events_artifact(events, H3_ARTIFACT_FRAMES, cli.frames_dir);
+            else
+                fprintf(stderr, "h3: wrote frames to %s\n", cli.frames_dir);
+        }
+        if (events) {
+            if (result->lora_count)
+                h3_events_metric(events, "load_transformer",
+                                 H3_METRIC_LORA_APPLY,
+                                 result->lora_apply_seconds, "s");
+            /* job.end is the stream's last event, so it waits until the
+             * context teardown below has said anything it has to say. */
+            finished = result;
+            finished_sidecar = sidecar;
+        } else {
+            free(sidecar);
+            h3_result_free(result);
+        }
     } else if (!info) {
         int cli_status = h3_cli_run(ctx, model_dir, &params, show, seed_given);
         h3_free(ctx);
@@ -698,6 +806,13 @@ int main(int argc, char **argv) {
         return cli_status;
     }
     h3_free(ctx);
+    if (finished)
+        h3_events_complete(events, output, finished_sidecar, finished,
+                           seconds_since(&started));
+    free(finished_sidecar);
+    h3_result_free(finished);
     h3_settings_free(&settings);
+    h3_set_log_callback(NULL, NULL);
+    h3_events_close(events);
     return 0;
 }

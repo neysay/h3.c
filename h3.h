@@ -81,6 +81,49 @@ typedef int (*h3_frame_callback)(const h3_frame *frame, void *opaque);
 typedef int (*h3_progress_callback)(const char *phase, int completed, int total,
                                     void *opaque);
 
+/* Structured stage boundaries, derived from the same progress counters as
+ * on_progress. Stage ids are stable: tokenize, encode_conditioning,
+ * text_encode, precompute_adaln, load_transformer, vae_load, denoise,
+ * audio_decode, vae_decode, mux. Each starts and ends at most once, a
+ * stage's progress never goes backwards, and on success every started
+ * stage has ended before h3_generate returns (h3_stages.h has the rules). */
+typedef enum {
+    H3_STAGE_START = 0,
+    H3_STAGE_PROGRESS = 1,
+    H3_STAGE_END = 2
+} h3_stage_kind;
+
+typedef struct {
+    h3_stage_kind kind;
+    const char *stage;
+    /* START and PROGRESS: the counter's own label, e.g. "text encoder". */
+    const char *label;
+    int completed;
+    int total;
+    /* END: measured wall time, and the peak Metal memory in use while the
+     * stage ran, across every GPU context. */
+    double elapsed_seconds;
+    double peak_memory_gib;
+} h3_stage_event;
+
+/* Return nonzero to cancel, like the progress callback. */
+typedef int (*h3_stage_callback)(const h3_stage_event *event, void *opaque);
+
+typedef enum {
+    H3_LOG_DEBUG = 0,
+    H3_LOG_INFO = 1,
+    H3_LOG_WARNING = 2,
+    H3_LOG_ERROR = 3
+} h3_log_level;
+
+/* Receives every library diagnostic in place of stderr: its level, and its
+ * text without the "h3: " / "h3: warning: " prefix or trailing newline.
+ * Process-wide, because messages come from components below h3_generate.
+ * NULL restores the default, which writes to stderr unchanged. */
+typedef void (*h3_log_callback)(h3_log_level level, const char *message,
+                                void *opaque);
+void h3_set_log_callback(h3_log_callback callback, void *opaque);
+
 typedef struct {
     int width;
     int height;
@@ -155,13 +198,15 @@ typedef struct {
      * with ssd_streaming, which rereads original weights every forward. */
     const h3_lora *loras;
     size_t lora_count;
+    /* Optional structured stage boundaries; shares callback_opaque. */
+    h3_stage_callback on_stage;
 } h3_params;
 
 #define H3_PARAMS_DEFAULT { \
     H3_DEFAULT_WIDTH, H3_DEFAULT_HEIGHT, H3_DEFAULT_FRAMES, H3_DEFAULT_STEPS, \
     UINT64_C(42), NULL, NULL, NULL, NULL, 0, H3_REFERENCE_IMAGE_MATCH, \
     H3_REFERENCE_VIDEO_AUTO, \
-    1, H3_DEFAULT_DIT_LAYERS, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, 0 \
+    1, H3_DEFAULT_DIT_LAYERS, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, 0, NULL \
 }
 
 typedef struct {
@@ -190,6 +235,18 @@ typedef struct {
     h3_component_info audio_vae;
 } h3_model_info;
 
+/* What an adapter did to the checkpoint, as applied by one render. */
+typedef struct {
+    const char *path;     /* as given in h3_params.loras */
+    float strength;       /* the caller's multiplier */
+    const char *format;   /* "native", "native-interleaved", "diffusers" */
+    size_t low_rank;      /* A/B pairs */
+    size_t full_deltas;   /* .diff / .diff_b tensors */
+    size_t targets;       /* checkpoint tensors the adapter touches */
+    size_t patched;       /* of those, tensors loaded and patched */
+    float scale;          /* the adapter's alpha/rank scale */
+} h3_lora_report;
+
 struct h3_result {
     int width;
     int height;
@@ -197,6 +254,11 @@ struct h3_result {
     int fps;
     int sample_rate;
     uint64_t seed;
+    /* Adapters applied while loading the transformer; empty when none were
+     * requested or a cached prepared transformer was reused. */
+    size_t lora_count;
+    h3_lora_report *loras;
+    double lora_apply_seconds;
 };
 
 /* Load model metadata and initialize the Metal device. Weights remain unmapped. */

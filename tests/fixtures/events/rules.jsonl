@@ -1,0 +1,19 @@
+{"type":"log","level":"debug","source":"h3","text":"events protocol 1","meta":{"protocol":1,"h3_version":"0.1.0-test","git_commit":"testcommit"}}
+{"type":"stage.start","stage":"tokenize","label":"tokenizer"}
+{"type":"stage.progress","stage":"tokenize","label":"tokenizer","step":1,"total":1}
+{"type":"stage.end","stage":"tokenize","elapsed_s":0.5}
+{"type":"metric","stage":"tokenize","key":"peak_memory_gb","value":1.25,"unit":"GiB"}
+{"type":"stage.start","stage":"encode_conditioning","label":"Qwen vision"}
+{"type":"stage.progress","stage":"encode_conditioning","label":"Qwen vision","step":27,"total":27}
+{"type":"stage.progress","stage":"encode_conditioning","label":"audio VAE encoder","step":9,"total":9}
+{"type":"stage.end","stage":"encode_conditioning","elapsed_s":0.5}
+{"type":"metric","stage":"encode_conditioning","key":"peak_memory_gb","value":2.5,"unit":"GiB"}
+{"type":"stage.start","stage":"text_encode","label":"text encoder"}
+{"type":"stage.progress","stage":"text_encode","label":"text encoder","step":50,"total":50}
+{"type":"stage.end","stage":"text_encode","elapsed_s":0.5}
+{"type":"metric","stage":"text_encode","key":"peak_memory_gb","value":3.75,"unit":"GiB"}
+{"type":"stage.start","stage":"mux","label":"FFmpeg"}
+{"type":"stage.progress","stage":"mux","label":"FFmpeg","step":22,"total":22}
+{"type":"stage.end","stage":"mux","elapsed_s":0.5}
+{"type":"metric","stage":"mux","key":"peak_memory_gb","value":5,"unit":"GiB"}
+{"type":"job.end","status":"complete","elapsed_s":1,"meta":{"protocol":1,"h3_version":"0.1.0-test","git_commit":"testcommit","width":512,"height":512,"frames":22,"fps":24,"sample_rate":32000,"seed":"18446744073709551615","loras":[]}}

@@ -32,6 +32,12 @@ typedef struct {
     double gpu_seconds;
 } h3_gpu_stats;
 
+/* Tensor bytes live across every GPU context in the process, and the peak
+ * since the last reset (reset sets the peak to what is live now). */
+uint64_t h3_gpu_process_live_bytes(void);
+uint64_t h3_gpu_process_peak_bytes(void);
+void h3_gpu_process_peak_reset(void);
+
 h3_gpu *h3_gpu_create(const char *shader_source_path,
                       char *error, size_t error_size);
 void h3_gpu_free(h3_gpu *gpu);

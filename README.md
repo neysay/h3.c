@@ -477,7 +477,29 @@ a default silently.
 
 Replaying a sidecar unchanged reproduces the render byte for byte. The
 interactive session writes a sidecar for every video, and `!save` copies it
-alongside the MP4.
+alongside the MP4. `--no-settings` skips writing it, for a caller that keeps
+its own record.
+
+## Supervising a render: the events stream
+
+A program that runs h3 can read a structured stream instead of parsing the
+terminal output. `--events-fd N` writes the render as JSON Lines to an
+already-open descriptor: stage starts and ends with measured wall time,
+progress counters, per-stage peak memory, logs, the files written, and a final
+`job.end` carrying the result (output path, canvas, frames, seed, applied
+LoRAs) or the reason for a failure. With it, h3's own messages leave stderr,
+so anything that still arrives there came from outside h3 (FFmpeg errors,
+Metal, a crash).
+
+```sh
+# fd 3 goes to events.jsonl; the terminal sees only foreign output
+./h3 -d ./MiniMax-H3 -p "<prompt>" --seed 7 -o outputs/clip.mp4 \
+  --no-settings --events-fd 3 3> events.jsonl
+```
+
+[docs/events.md](docs/events.md) is the specification: event types, the stage
+ids and their rules, metrics, the result, and versioning. `h3 --info` prints
+the protocol version the binary speaks.
 
 ## Tests and runtime requirements
 
@@ -494,6 +516,11 @@ toolchain. The test covers both an F32 diagnosis path and the production BF16
 storage path; wide BF16 matrix products and SDPA use cached MPSGraph graphs, with
 direct Metal correctness fallbacks. `make parity` runs only those Metal/MLX
 checks.
+
+`make test` also checks the events protocol without a model: a scripted render
+goes through the real stage tracker and event writer and must match
+`tests/fixtures/events/` byte for byte (`H3_UPDATE_FIXTURES=1 ./h3_events_tests`
+rewrites them after an intended change).
 
 FFmpeg and FFprobe must be available on `PATH` for media inputs and MP4 output
 (`H3_FFMPEG` and `H3_FFPROBE` may select explicit executables). Generated RGB24 and

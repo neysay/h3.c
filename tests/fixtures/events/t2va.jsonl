@@ -1,0 +1,51 @@
+{"type":"log","level":"debug","source":"h3","text":"events protocol 1","meta":{"protocol":1,"h3_version":"0.1.0-test","git_commit":"testcommit"}}
+{"type":"stage.start","stage":"tokenize","label":"tokenizer"}
+{"type":"stage.progress","stage":"tokenize","label":"tokenizer","step":0,"total":1}
+{"type":"stage.progress","stage":"tokenize","label":"tokenizer","step":1,"total":1}
+{"type":"stage.end","stage":"tokenize","elapsed_s":0.5}
+{"type":"metric","stage":"tokenize","key":"peak_memory_gb","value":1.25,"unit":"GiB"}
+{"type":"stage.start","stage":"text_encode","label":"text encoder"}
+{"type":"stage.progress","stage":"text_encode","label":"text encoder","step":0,"total":50}
+{"type":"stage.progress","stage":"text_encode","label":"text encoder","step":25,"total":50}
+{"type":"stage.progress","stage":"text_encode","label":"text encoder","step":50,"total":50}
+{"type":"stage.progress","stage":"text_encode","label":"refine text","step":1,"total":1}
+{"type":"stage.end","stage":"text_encode","elapsed_s":0.5}
+{"type":"metric","stage":"text_encode","key":"peak_memory_gb","value":2.5,"unit":"GiB"}
+{"type":"stage.start","stage":"precompute_adaln","label":"precompute AdaLN"}
+{"type":"stage.progress","stage":"precompute_adaln","label":"precompute AdaLN","step":1,"total":50}
+{"type":"stage.progress","stage":"precompute_adaln","label":"precompute AdaLN","step":50,"total":50}
+{"type":"stage.end","stage":"precompute_adaln","elapsed_s":0.5}
+{"type":"metric","stage":"precompute_adaln","key":"peak_memory_gb","value":3.75,"unit":"GiB"}
+{"type":"stage.start","stage":"load_transformer","label":"load transformer core"}
+{"type":"stage.progress","stage":"load_transformer","label":"load transformer core","step":1,"total":50}
+{"type":"stage.progress","stage":"load_transformer","label":"load transformer core","step":50,"total":50}
+{"type":"stage.end","stage":"load_transformer","elapsed_s":0.5}
+{"type":"metric","stage":"load_transformer","key":"peak_memory_gb","value":5,"unit":"GiB"}
+{"type":"stage.start","stage":"denoise","label":"denoise enqueue"}
+{"type":"stage.progress","stage":"denoise","label":"denoise enqueue","step":0,"total":4}
+{"type":"stage.progress","stage":"denoise","label":"denoise enqueue","step":4,"total":4}
+{"type":"stage.progress","stage":"denoise","label":"denoise","step":4,"total":4}
+{"type":"stage.end","stage":"denoise","elapsed_s":0.5}
+{"type":"metric","stage":"denoise","key":"peak_memory_gb","value":6.25,"unit":"GiB"}
+{"type":"stage.start","stage":"audio_decode","label":"audio VAE"}
+{"type":"stage.progress","stage":"audio_decode","label":"audio VAE","step":0,"total":7}
+{"type":"stage.progress","stage":"audio_decode","label":"audio VAE","step":7,"total":7}
+{"type":"stage.end","stage":"audio_decode","elapsed_s":0.5}
+{"type":"metric","stage":"audio_decode","key":"peak_memory_gb","value":7.5,"unit":"GiB"}
+{"type":"stage.start","stage":"vae_load","label":"video VAE load"}
+{"type":"stage.progress","stage":"vae_load","label":"video VAE load","step":0,"total":36}
+{"type":"stage.progress","stage":"vae_load","label":"video VAE load","step":36,"total":36}
+{"type":"stage.end","stage":"vae_load","elapsed_s":0.5}
+{"type":"metric","stage":"vae_load","key":"peak_memory_gb","value":8.75,"unit":"GiB"}
+{"type":"stage.start","stage":"vae_decode","label":"video VAE decode"}
+{"type":"stage.progress","stage":"vae_decode","label":"video VAE decode","step":1,"total":2}
+{"type":"stage.progress","stage":"vae_decode","label":"video VAE decode","step":2,"total":2}
+{"type":"stage.end","stage":"vae_decode","elapsed_s":0.5}
+{"type":"metric","stage":"vae_decode","key":"peak_memory_gb","value":10,"unit":"GiB"}
+{"type":"stage.start","stage":"mux","label":"FFmpeg"}
+{"type":"stage.progress","stage":"mux","label":"FFmpeg","step":0,"total":22}
+{"type":"stage.progress","stage":"mux","label":"FFmpeg","step":22,"total":22}
+{"type":"stage.end","stage":"mux","elapsed_s":0.5}
+{"type":"metric","stage":"mux","key":"peak_memory_gb","value":11.25,"unit":"GiB"}
+{"type":"artifact","kind":"video","path":"/nonexistent/out/video.mp4"}
+{"type":"job.end","status":"complete","elapsed_s":41.5,"meta":{"protocol":1,"h3_version":"0.1.0-test","git_commit":"testcommit","output":"/nonexistent/out/video.mp4","width":512,"height":512,"frames":22,"fps":24,"sample_rate":32000,"seed":"18446744073709551615","loras":[]}}

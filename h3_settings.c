@@ -1,5 +1,6 @@
 #include "h3_settings.h"
 #include "h3_build_info.h"
+#include "h3_json.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -35,32 +36,14 @@ char *h3_settings_path_for(const char *output_path) {
 
 /* ---- writing ------------------------------------------------------------ */
 
+/* Paths and text byte for byte, as the sidecar always has. */
 static void write_string(FILE *file, const char *text) {
-    fputc('"', file);
-    for (const unsigned char *cursor = (const unsigned char *)text;
-         *cursor; cursor++) {
-        switch (*cursor) {
-            case '"': fputs("\\\"", file); break;
-            case '\\': fputs("\\\\", file); break;
-            case '\n': fputs("\\n", file); break;
-            case '\r': fputs("\\r", file); break;
-            case '\t': fputs("\\t", file); break;
-            default:
-                if (*cursor < 0x20) fprintf(file, "\\u%04x", *cursor);
-                else fputc(*cursor, file);
-        }
-    }
-    fputc('"', file);
+    h3_json_write_string(file, text, 0);
 }
 
 /* Absolute path when the file exists, otherwise the path as given. */
 static void write_path(FILE *file, const char *path) {
-    if (!path) {
-        fputs("null", file);
-        return;
-    }
-    char resolved[PATH_MAX];
-    write_string(file, realpath(path, resolved) ? resolved : path);
+    h3_json_write_path(file, path, 0);
 }
 
 static void write_bool(FILE *file, const char *key, int value) {
@@ -180,14 +163,9 @@ int h3_settings_write(const char *output_path, const char *model_dir,
     for (size_t index = 0; index < params->lora_count; index++) {
         fprintf(file, "%s\n    {\"path\": ", index ? "," : "");
         write_path(file, params->loras[index].path);
-        /* Shortest decimal that reads back to the identical float. */
-        float scale = params->loras[index].scale;
-        char text[32];
-        for (int digits = 6; digits <= 9; digits++) {
-            snprintf(text, sizeof(text), "%.*g", digits, (double)scale);
-            if (strtof(text, NULL) == scale) break;
-        }
-        fprintf(file, ", \"scale\": %s}", text);
+        fputs(", \"scale\": ", file);
+        h3_json_write_float(file, params->loras[index].scale);
+        fputc('}', file);
     }
     fputs(params->lora_count ? "\n  ]" : "]", file);
     if (result) {

@@ -1,5 +1,6 @@
 #define ACCELERATE_NEW_LAPACK
 #include "h3_lora.h"
+#include "h3_log.h"
 
 #include <Accelerate/Accelerate.h>
 #include <dispatch/dispatch.h>
@@ -614,7 +615,7 @@ void h3_lora_set_free(h3_lora_set *set) {
     if (!set) return;
     h3_lora_set_release_gpu(set);
     if (getenv("H3_LORA_TIMING"))
-        fprintf(stderr, "h3: LoRA timing stage=%.2fs gpu=%.2fs host-widen=%.2fs "
+        h3_log(H3_LOG_DEBUG, "h3: LoRA timing stage=%.2fs gpu=%.2fs host-widen=%.2fs "
                 "host-narrow=%.2fs\n", set->phase_seconds[0],
                 set->phase_seconds[2], set->phase_seconds[1],
                 set->phase_seconds[3]);

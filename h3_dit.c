@@ -1,4 +1,5 @@
 #include "h3_dit.h"
+#include "h3_log.h"
 
 #include "h3_dit_schedule.h"
 #include "h3_weights.h"
@@ -1230,11 +1231,16 @@ static void configure_gate_ranked_blocks(h3_dit *dit) {
     for (unsigned index = 0; index < skipped; index++)
         dit->block_active[scores[index].block] = 0;
     if (getenv("H3_PROFILE")) {
-        fprintf(stderr, "h3: gate-ranked DiT skips");
-        for (unsigned index = 0; index < skipped; index++)
-            fprintf(stderr, " %u(%.4g)", scores[index].block,
-                    scores[index].score);
-        fputc('\n', stderr);
+        /* One message, so a log sink receives the line whole. */
+        char line[2048];
+        size_t used = (size_t)snprintf(line, sizeof(line),
+                                       "h3: gate-ranked DiT skips");
+        for (unsigned index = 0; index < skipped && used < sizeof(line);
+             index++)
+            used += (size_t)snprintf(line + used, sizeof(line) - used,
+                                     " %u(%.4g)", scores[index].block,
+                                     scores[index].score);
+        h3_log(H3_LOG_DEBUG, "%s\n", line);
     }
 }
 
@@ -2639,13 +2645,13 @@ static int denoise_euler_gpu(h3_dit *dit, float *video_latent,
     }
     if (custom_count > 0) selected_count = custom_count;
     if (reuse_interval > 1 && getenv("H3_PROFILE"))
-        fprintf(stderr, "h3: %s GPU reuse schedule has %d evaluations\n",
+        h3_log(H3_LOG_DEBUG, "h3: %s GPU reuse schedule has %d evaluations\n",
                 custom_count > 0 ? "custom" : "selected", selected_count);
     unsigned window = gpu_sampler_window();
     int disable_command_split = window == 1 &&
                                 getenv("H3_DIT_COMMAND_BLOCKS") == NULL;
     if (getenv("H3_PROFILE"))
-        fprintf(stderr, "h3: GPU sampler encode window is %s; internal split "
+        h3_log(H3_LOG_DEBUG, "h3: GPU sampler encode window is %s; internal split "
                 "%s\n", window ? "bounded" : "unbounded",
                 disable_command_split ? "disabled" : "enabled");
 
@@ -2923,7 +2929,7 @@ int h3_dit_denoise_euler_preview(
     }
     if (custom_count > 0) selected_count = custom_count;
     if (reuse_interval > 1 && getenv("H3_PROFILE"))
-        fprintf(stderr, "h3: %s reuse schedule has %d evaluations\n",
+        h3_log(H3_LOG_DEBUG, "h3: %s reuse schedule has %d evaluations\n",
                 custom_count > 0 ? "custom" : "selected", selected_count);
     size_t video_count = h3_dit_video_elements(dit);
     size_t audio_count = h3_dit_audio_elements(dit);
@@ -3096,7 +3102,7 @@ void h3_dit_free(h3_dit *dit) {
     h3_dit_schedule_free(dit->schedule);
     if (dit->ssd_streaming && getenv("H3_PROFILE")) {
         double gib = (double)dit->stream_bytes / (1024.0 * 1024.0 * 1024.0);
-        fprintf(stderr,
+        h3_log(H3_LOG_DEBUG,
                 "h3: BF16 SSD stream %.3f GiB read in %.3fs (%.3f GiB/s), "
                 "unhidden wait %.3fs\n",
                 gib, dit->stream_read_seconds,

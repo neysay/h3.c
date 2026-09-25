@@ -1,0 +1,4 @@
+{"type":"log","level":"debug","source":"h3","text":"events protocol 1","meta":{"protocol":1,"h3_version":"0.1.0-test","git_commit":"testcommit"}}
+{"type":"log","level":"info","source":"h3","text":"quote \" backslash \\ newline \n tab \t café 漢 bad \ufffd\ufffd end"}
+{"type":"artifact","kind":"preview","path":"/nonexistent/préview \"1\".png"}
+{"type":"job.end","status":"failed","error":"control \u0001 char","elapsed_s":0}

@@ -1,4 +1,5 @@
 #include "h3_video_vae.h"
+#include "h3_log.h"
 
 #include "h3_weights.h"
 
@@ -929,7 +930,7 @@ h3_video_vae_decoder *h3_video_vae_decoder_load(
         tile_axis_build(latent_width * SPATIAL_RATIO, tile_pixels,
                         &decoder->x_axis, error, error_size);
     if (ok && getenv("H3_PROFILE"))
-        fprintf(stderr, "h3: resident video VAE tiles %dx%d at %d pixels\n",
+        h3_log(H3_LOG_DEBUG, "h3: resident video VAE tiles %dx%d at %d pixels\n",
                 decoder->x_axis.count, decoder->y_axis.count, tile_pixels);
     vae_context *vae = &decoder->vae;
     if (ok) {
@@ -1085,7 +1086,7 @@ static int decode_chunked(const char *weight_directory,
         return 0;
     }
     if (getenv("H3_PROFILE"))
-        fprintf(stderr, "h3: video VAE tiles %dx%d at %d pixels\n",
+        h3_log(H3_LOG_DEBUG, "h3: video VAE tiles %dx%d at %d pixels\n",
                 x_axis.count, y_axis.count, tile_pixels);
     vae_context vae;
     memset(&vae, 0, sizeof(vae));

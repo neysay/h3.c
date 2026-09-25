@@ -1,0 +1,10 @@
+{"type":"log","level":"debug","source":"h3","text":"events protocol 1","meta":{"protocol":1,"h3_version":"0.1.0-test","git_commit":"testcommit"}}
+{"type":"stage.start","stage":"tokenize","label":"tokenizer"}
+{"type":"stage.progress","stage":"tokenize","label":"tokenizer","step":0,"total":1}
+{"type":"stage.progress","stage":"tokenize","label":"tokenizer","step":1,"total":1}
+{"type":"stage.end","stage":"tokenize","elapsed_s":0.5}
+{"type":"metric","stage":"tokenize","key":"peak_memory_gb","value":1.25,"unit":"GiB"}
+{"type":"stage.start","stage":"encode_conditioning","label":"Qwen vision"}
+{"type":"stage.progress","stage":"encode_conditioning","label":"Qwen vision","step":1,"total":27}
+{"type":"log","level":"warning","source":"h3","text":"reference video 1 runs 10.0s; only its first 56 frames (2.3s) condition the render"}
+{"type":"job.end","status":"failed","error":"FFmpeg could not decode image /nonexistent/a \"b\".png (status 69)","elapsed_s":0.75}

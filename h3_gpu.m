@@ -1,3 +1,5 @@
+#include "h3_log.h"
+#include <stdatomic.h>
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
@@ -167,6 +169,40 @@ static MPSCommandBuffer *h3_gpu_mps_command(H3GPU *gpu) {
     return gpu.mpsCommand;
 }
 
+/* Process-wide tensor accounting across every GPU context, so a caller can
+ * ask what was in use at once -- the per-context stats cannot answer that
+ * when the text encoder, DiT and VAE hold memory at the same time. */
+static _Atomic uint64_t h3_gpu_process_live;
+static _Atomic uint64_t h3_gpu_process_peak;
+
+static void h3_gpu_process_account_alloc(uint64_t bytes) {
+    uint64_t live = atomic_fetch_add(&h3_gpu_process_live, bytes) + bytes;
+    uint64_t peak = atomic_load(&h3_gpu_process_peak);
+    while (live > peak &&
+           !atomic_compare_exchange_weak(&h3_gpu_process_peak, &peak, live)) {
+    }
+}
+
+static void h3_gpu_process_account_free(uint64_t bytes) {
+    uint64_t live = atomic_load(&h3_gpu_process_live);
+    uint64_t next;
+    do {
+        next = live >= bytes ? live - bytes : 0;
+    } while (!atomic_compare_exchange_weak(&h3_gpu_process_live, &live, next));
+}
+
+uint64_t h3_gpu_process_live_bytes(void) {
+    return atomic_load(&h3_gpu_process_live);
+}
+
+uint64_t h3_gpu_process_peak_bytes(void) {
+    return atomic_load(&h3_gpu_process_peak);
+}
+
+void h3_gpu_process_peak_reset(void) {
+    atomic_store(&h3_gpu_process_peak, atomic_load(&h3_gpu_process_live));
+}
+
 static double h3_gpu_now(void) {
     struct timespec time;
     if (clock_gettime(CLOCK_MONOTONIC, &time) != 0) return 0.0;
@@ -191,7 +227,7 @@ static void h3_gpu_profile_emit(H3GPU *gpu, NSString *phase,
     /* The label column must clear the longest label ("resident video VAE
      * decoder", 26) with two spaces to spare: supervisors split label from
      * phase on a run of two-plus spaces. */
-    fprintf(stderr,
+    h3_log(H3_LOG_DEBUG,
         "h3 profile: %-28s %-14s wall=%8.3fs encode=%7.3fs "
         "wait=%8.3fs root-gpu=%7.3fs "
         "peak=%7.3fGiB alloc=%7.3fGiB submissions=%llu "
@@ -350,7 +386,7 @@ h3_gpu *h3_gpu_create(const char *shader_source_path,
             return NULL;
         }
         if (getenv("H3_DEBUG_GPU_MEMORY")) {
-            fprintf(stderr, "h3: Metal live allocation at GPU startup: "
+            h3_log(H3_LOG_DEBUG, "h3: Metal live allocation at GPU startup: "
                     "%.3f GiB\n", (double)gpu.device.currentAllocatedSize /
                     (1024.0 * 1024.0 * 1024.0));
         }
@@ -403,7 +439,7 @@ h3_gpu *h3_gpu_create(const char *shader_source_path,
                 /* TensorOps is optional: an older runtime must retain the
                  * ordinary MPSGraph/direct Metal implementation. */
                 if (getenv("H3_NAX_DIAGNOSTIC"))
-                    fprintf(stderr, "h3: TensorOps compile failed: %s\n",
+                    h3_log(H3_LOG_DEBUG, "h3: TensorOps compile failed: %s\n",
                             libraryError.localizedDescription.UTF8String);
                 options.preprocessorMacros = @{};
                 libraryError = nil;
@@ -542,7 +578,7 @@ void h3_gpu_free(h3_gpu *gpu) {
         object.queue = nil;
         object.device = nil;
         if (getenv("H3_DEBUG_GPU_MEMORY")) {
-            fprintf(stderr, "h3: Metal live allocation at GPU teardown: "
+            h3_log(H3_LOG_DEBUG, "h3: Metal live allocation at GPU teardown: "
                     "%.3f GiB\n", (double)before /
                     (1024.0 * 1024.0 * 1024.0));
         }
@@ -592,6 +628,7 @@ static h3_gpu_tensor *h3_gpu_tensor_new(h3_gpu *opaque, const void *values,
         stats.peak_live_bytes = stats.live_bytes;
     stats.tensor_allocations++;
     gpu.stats = stats;
+    h3_gpu_process_account_alloc(bytes);
     return (__bridge_retained h3_gpu_tensor *)tensor;
 }
 
@@ -692,6 +729,7 @@ static h3_gpu_tensor *h3_gpu_tensor_load_file(h3_gpu *opaque, const char *path,
             stats.peak_live_bytes = stats.live_bytes;
         stats.tensor_allocations++;
         gpu.stats = stats;
+        h3_gpu_process_account_alloc(bytes);
         return (__bridge_retained h3_gpu_tensor *)tensor;
     }
     h3_gpu_tensor *opaque_tensor = h3_gpu_tensor_new(
@@ -819,6 +857,7 @@ void h3_gpu_tensor_free(h3_gpu_tensor *tensor) {
             stats.live_bytes = stats.live_bytes >= object.bytes ?
                 stats.live_bytes - object.bytes : 0;
             owner.stats = stats;
+            h3_gpu_process_account_free(object.bytes);
         }
         [object.buffer setPurgeableState:MTLPurgeableStateEmpty];
         object.buffer = nil;
