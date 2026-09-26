@@ -108,12 +108,14 @@ On success:
   "protocol":1,"h3_version":"0.1.0-dev","git_commit":"9acdbdcddc52",
   "output":"/abs/video.mp4","settings":"/abs/video.json",
   "width":512,"height":512,"frames":22,"fps":24,"sample_rate":32000,"seed":"7",
+  "shift":12,
   "loras":[{"path":"/abs/turbo.safetensors","scale":1,"format":"native",
             "low_rank":259,"full_deltas":0,"patched":259,"targets":259,
             "alpha_scale":1}]}}
 ```
 
 - `seed` is a string: a 64-bit seed does not survive a JSON number.
+- `shift` is the video sigma shift the sampler ran with: 12, or `--shift`.
 - `settings` is left out with `--no-settings`, which skips writing the sidecar.
 - `loras[].scale` is the strength given to `--lora PATH:S`, as in the sidecar;
   `alpha_scale` is the adapter's own alpha/rank scale.

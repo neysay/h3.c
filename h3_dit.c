@@ -2862,7 +2862,7 @@ int h3_dit_denoise(h3_dit *dit, float *video_latent, float *audio_latent,
         float timestep = 1.0f - sigma;
         float sigma_from_timestep = 1.0f - timestep;
         float audio_slope = (float)h3_time_shift_slope(
-            sigma, H3_VIDEO_SIGMA_SHIFT, H3_AUDIO_SIGMA_SHIFT);
+            sigma, dit->sigmas.video_shift, dit->sigmas.audio_shift);
         if (ok) {
             for (size_t index = 0; index < video_count; index++)
                 video_denoised[index] = video_latent[index] +

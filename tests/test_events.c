@@ -192,6 +192,7 @@ static h3_result t2va_result(void) {
     result.fps = 24;
     result.sample_rate = 32000;
     result.seed = UINT64_C(18446744073709551615); /* survives only as text */
+    result.video_shift = H3_DEFAULT_VIDEO_SHIFT;
     return result;
 }
 

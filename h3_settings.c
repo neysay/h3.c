@@ -111,6 +111,12 @@ int h3_settings_write(const char *output_path, const char *model_dir,
     write_int(file, "render-height", params->render_height);
     write_int(file, "frames", params->frames);
     write_int(file, "steps", params->steps);
+    /* Only an explicit shift is recorded, so a default render's sidecar
+     * still loads in builds that predate --shift. */
+    if (params->video_shift != 0.0) {
+        fputs(",\n  \"shift\": ", file);
+        h3_json_write_float(file, (float)params->video_shift);
+    }
     write_int(file, "reuse", params->denoise_reuse);
     write_int(file, "layers", params->dit_layers);
     write_int(file, "core-reuse", params->core_reuse);
@@ -610,6 +616,17 @@ static int apply_member(h3_settings *settings, const char *key,
             return 0;
         }
         *(int *)((char *)params + bool_fields[index].offset) = value->boolean;
+        return 1;
+    }
+    if (!strcmp(key, "shift")) {
+        if (value->type != JSON_NUMBER ||
+            !(value->number >= H3_MIN_VIDEO_SHIFT &&
+              value->number <= H3_MAX_VIDEO_SHIFT)) {
+            fail(error, error_size, "\"shift\" must be a number in [%g, %g]",
+                 H3_MIN_VIDEO_SHIFT, H3_MAX_VIDEO_SHIFT);
+            return 0;
+        }
+        params->video_shift = value->number;
         return 1;
     }
     if (!strcmp(key, "seed")) {

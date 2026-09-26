@@ -127,6 +127,21 @@ static void test_schedule(void) {
     }
     CHECK(!h3_serving_schedule_build(1, &schedule));
     CHECK(!h3_serving_schedule_build(H3_MAX_STEPS + 1, &schedule));
+    CHECK(schedule.video_shift == 12.0 && schedule.audio_shift == 3.0);
+
+    /* lightx2v's published 4-NFE grid at shift 12: 1, 0.9730, 0.9231, 0.8. */
+    CHECK(h3_serving_schedule_build_shifted(4, 12.0, &schedule));
+    CHECK(close_enough(schedule.video[1], 0.9730, 1e-4));
+    CHECK(close_enough(schedule.video[2], 0.9231, 1e-4));
+    CHECK(close_enough(schedule.video[3], 0.8000, 1e-4));
+    /* Shift 6 (lightx2v 768p): only the video list moves. */
+    CHECK(h3_serving_schedule_build_shifted(4, 6.0, &schedule));
+    CHECK(schedule.video_shift == 6.0 && schedule.audio_shift == 3.0);
+    CHECK(close_enough(schedule.video[1], 18.0 / 19.0, 1e-7));
+    CHECK(close_enough(schedule.video[2], 6.0 / 7.0, 1e-7));
+    CHECK(close_enough(schedule.audio[1], 9.0 / 10.0, 1e-7));
+    CHECK(schedule.video[0] == 1.0f && schedule.video[4] == 0.0f);
+    CHECK(!h3_serving_schedule_build_shifted(4, 0.5, &schedule));
 }
 
 static void test_dit_reuse_schedule(void) {

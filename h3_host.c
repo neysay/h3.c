@@ -147,6 +147,8 @@ int h3_schedule_build(int steps, h3_sigma_schedule *schedule) {
     if (!schedule || steps < 1 || steps > H3_MAX_STEPS) return 0;
     memset(schedule, 0, sizeof(*schedule));
     schedule->steps = steps;
+    schedule->video_shift = H3_VIDEO_SIGMA_SHIFT;
+    schedule->audio_shift = H3_AUDIO_SIGMA_SHIFT;
     for (int index = 0; index < steps; index++) {
         schedule->video[index] = h3_shifted_sigma(
             index, steps, (float)H3_VIDEO_SIGMA_SHIFT);
@@ -158,21 +160,31 @@ int h3_schedule_build(int steps, h3_sigma_schedule *schedule) {
     return 1;
 }
 
-int h3_serving_schedule_build(int evaluations, h3_sigma_schedule *schedule) {
-    if (!schedule || evaluations < 2 || evaluations > H3_MAX_STEPS) return 0;
+int h3_serving_schedule_build_shifted(int evaluations, double video_shift,
+                                      h3_sigma_schedule *schedule) {
+    if (!schedule || evaluations < 2 || evaluations > H3_MAX_STEPS ||
+        !(video_shift >= 1.0 && video_shift <= 1000.0)) return 0;
     memset(schedule, 0, sizeof(*schedule));
     schedule->steps = evaluations;
+    schedule->video_shift = video_shift;
+    schedule->audio_shift = H3_AUDIO_SIGMA_SHIFT;
     float denominator = (float)evaluations;
+    float shift = (float)video_shift;
     for (int index = 0; index <= evaluations; index++) {
         float base = 1.0f - (float)index / denominator;
-        schedule->video[index] = (float)H3_VIDEO_SIGMA_SHIFT * base /
-            (1.0f + ((float)H3_VIDEO_SIGMA_SHIFT - 1.0f) * base);
+        schedule->video[index] = shift * base /
+            (1.0f + (shift - 1.0f) * base);
         schedule->audio[index] = (float)H3_AUDIO_SIGMA_SHIFT * base /
             (1.0f + ((float)H3_AUDIO_SIGMA_SHIFT - 1.0f) * base);
     }
     schedule->video[evaluations] = 0.0f;
     schedule->audio[evaluations] = 0.0f;
     return 1;
+}
+
+int h3_serving_schedule_build(int evaluations, h3_sigma_schedule *schedule) {
+    return h3_serving_schedule_build_shifted(
+        evaluations, H3_VIDEO_SIGMA_SHIFT, schedule);
 }
 
 typedef struct {

@@ -29,4 +29,4 @@
 {"type":"metric","stage":"load_transformer","key":"lora_apply_s","value":13.42,"unit":"s"}
 {"type":"artifact","kind":"video","path":"/nonexistent/out/video.mp4"}
 {"type":"artifact","kind":"settings","path":"/nonexistent/out/video.json"}
-{"type":"job.end","status":"complete","elapsed_s":58.25,"meta":{"protocol":1,"h3_version":"0.1.0-test","git_commit":"testcommit","output":"/nonexistent/out/video.mp4","settings":"/nonexistent/out/video.json","width":512,"height":512,"frames":22,"fps":24,"sample_rate":32000,"seed":"18446744073709551615","loras":[{"path":"/nonexistent/turbo.safetensors","scale":0.75,"format":"native","low_rank":259,"full_deltas":0,"patched":259,"targets":259,"alpha_scale":1}]}}
+{"type":"job.end","status":"complete","elapsed_s":58.25,"meta":{"protocol":1,"h3_version":"0.1.0-test","git_commit":"testcommit","output":"/nonexistent/out/video.mp4","settings":"/nonexistent/out/video.json","width":512,"height":512,"frames":22,"fps":24,"sample_rate":32000,"seed":"18446744073709551615","shift":12,"loras":[{"path":"/nonexistent/turbo.safetensors","scale":0.75,"format":"native","low_rank":259,"full_deltas":0,"patched":259,"targets":259,"alpha_scale":1}]}}

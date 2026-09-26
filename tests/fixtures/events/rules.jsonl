@@ -16,4 +16,4 @@
 {"type":"stage.progress","stage":"mux","label":"FFmpeg","step":22,"total":22}
 {"type":"stage.end","stage":"mux","elapsed_s":0.5}
 {"type":"metric","stage":"mux","key":"peak_memory_gb","value":5,"unit":"GiB"}
-{"type":"job.end","status":"complete","elapsed_s":1,"meta":{"protocol":1,"h3_version":"0.1.0-test","git_commit":"testcommit","width":512,"height":512,"frames":22,"fps":24,"sample_rate":32000,"seed":"18446744073709551615","loras":[]}}
+{"type":"job.end","status":"complete","elapsed_s":1,"meta":{"protocol":1,"h3_version":"0.1.0-test","git_commit":"testcommit","width":512,"height":512,"frames":22,"fps":24,"sample_rate":32000,"seed":"18446744073709551615","shift":12,"loras":[]}}

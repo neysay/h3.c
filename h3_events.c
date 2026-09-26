@@ -223,9 +223,10 @@ void h3_events_complete(h3_events *events, const char *output,
     if (result) {
         fprintf(out.file,
                 ",\"width\":%d,\"height\":%d,\"frames\":%d,\"fps\":%d,"
-                "\"sample_rate\":%d,\"seed\":\"%" PRIu64 "\"",
+                "\"sample_rate\":%d,\"seed\":\"%" PRIu64 "\",\"shift\":",
                 result->width, result->height, result->frames, result->fps,
                 result->sample_rate, result->seed);
+        h3_json_write_float(out.file, (float)result->video_shift);
         fputs(",\"loras\":[", out.file);
         for (size_t index = 0; index < result->lora_count; index++) {
             const h3_lora_report *lora = &result->loras[index];

@@ -83,6 +83,10 @@ typedef struct {
     int steps;
     float video[H3_MAX_STEPS + 1];
     float audio[H3_MAX_STEPS + 1];
+    /* The shifts the two lists were built with; the sampler converts video
+     * sigmas to audio time with them. */
+    double video_shift;
+    double audio_shift;
 } h3_sigma_schedule;
 
 typedef struct {
@@ -119,6 +123,9 @@ double h3_time_shift_slope(double sigma, double from_shift, double to_shift);
 int h3_schedule_build(int steps, h3_sigma_schedule *schedule);
 /* Released linear base grid: evaluations model forwards plus terminal zero. */
 int h3_serving_schedule_build(int evaluations, h3_sigma_schedule *schedule);
+/* The same grid with a caller-chosen video shift (audio stays fixed). */
+int h3_serving_schedule_build_shifted(int evaluations, double video_shift,
+                                      h3_sigma_schedule *schedule);
 
 int h3_layout_build(const h3_layout_spec *spec, h3_layout *layout,
                     char *error, size_t error_size);

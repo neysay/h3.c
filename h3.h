@@ -16,6 +16,11 @@ extern "C" {
 #define H3_DEFAULT_STEPS 20
 #define H3_DEFAULT_DIT_LAYERS 50
 #define H3_MIN_DIT_LAYERS 35
+/* Video sigma shift of the released schedule; audio stays at 3. Distilled
+ * adapters trained on another shift (lightx2v 768p: 6) pass video_shift. */
+#define H3_DEFAULT_VIDEO_SHIFT 12.0
+#define H3_MIN_VIDEO_SHIFT 1.0
+#define H3_MAX_VIDEO_SHIFT 30.0
 
 typedef struct h3_ctx h3_ctx;
 typedef struct h3_result h3_result;
@@ -200,13 +205,16 @@ typedef struct {
     size_t lora_count;
     /* Optional structured stage boundaries; shares callback_opaque. */
     h3_stage_callback on_stage;
+    /* Video sigma shift for the sampler schedule. Zero selects the released
+     * H3_DEFAULT_VIDEO_SHIFT; the audio shift is fixed. */
+    double video_shift;
 } h3_params;
 
 #define H3_PARAMS_DEFAULT { \
     H3_DEFAULT_WIDTH, H3_DEFAULT_HEIGHT, H3_DEFAULT_FRAMES, H3_DEFAULT_STEPS, \
     UINT64_C(42), NULL, NULL, NULL, NULL, 0, H3_REFERENCE_IMAGE_MATCH, \
     H3_REFERENCE_VIDEO_AUTO, \
-    1, H3_DEFAULT_DIT_LAYERS, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, 0, NULL \
+    1, H3_DEFAULT_DIT_LAYERS, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, 0, NULL, 0.0 \
 }
 
 typedef struct {
@@ -254,6 +262,8 @@ struct h3_result {
     int fps;
     int sample_rate;
     uint64_t seed;
+    /* The video sigma shift the sampler ran with. */
+    double video_shift;
     /* Adapters applied while loading the transformer; empty when none were
      * requested or a cached prepared transformer was reused. */
     size_t lora_count;

@@ -446,8 +446,20 @@ LoRAs cannot be combined with `--ssd-streaming`.
 
 Distilled adapters sample with `--steps 4`-`6` and no other speed flags; the
 distilled schedule removes the redundancy used by `--reuse` and
-`--core-reuse`. Adapters are trained against specific schedules: h3.c uses a
-video sigma shift of 12, while lightx2v's 768p DMD configs use 6.
+`--core-reuse`. Adapters are trained against specific schedules, so pass the
+one an adapter was distilled on: the released video sigma shift is 12 (the
+larryvrh turbo, lightx2v's Ref2V 4-step and FastH3 use it), while lightx2v's
+768p FL2V adapters were trained at 6:
+
+```sh
+./h3 -d ./MiniMax-H3 -p "<prompt>" --steps 4 --shift 6 \
+  --lora ./minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors -o out.mp4
+```
+
+`--shift F` (1..30) moves only the video schedule; the audio shift stays at 3.
+It is recorded in the settings sidecar when given, reported as `shift` in the
+events stream's `job.end`, part of the prepared-DiT cache key, and `--info`
+lists it under `features:`.
 
 `tools/fold_turbo_lora.py` still bakes an adapter into a standalone checkpoint
 copy (about 62 GB per variant, since patched ranges break APFS copy-on-write).

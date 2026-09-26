@@ -35,6 +35,8 @@ static void usage(const char *program) {
         "      --frames N         Requested frames (default: 56)\n"
         "      --seconds N        Requested duration at 24 fps (instead of --frames)\n"
         "      --steps N          Denoising passes (default: 20)\n"
+        "      --shift F          Video sigma shift (default: 12); for\n"
+        "                         adapters distilled on another schedule\n"
         "      --reuse N          Denoiser reuse: 1 close, 2 fast, 3 aggressive\n"
         "      --layers N         DiT blocks: 50 exact, 45 fast, 40 aggressive\n"
         "      --core-reuse N     Core refresh: 1 exact, 4 fast, 6 aggressive\n"
@@ -111,6 +113,19 @@ static int frames_from_seconds(const char *value) {
     return (int)rounded;
 }
 
+static double parse_shift(const char *value) {
+    char *end = NULL;
+    errno = 0;
+    double parsed = strtod(value, &end);
+    if (errno || !end || *end || !isfinite(parsed) ||
+        parsed < H3_MIN_VIDEO_SHIFT || parsed > H3_MAX_VIDEO_SHIFT) {
+        fprintf(stderr, "h3: invalid shift: %s (expected %g..%g)\n", value,
+                H3_MIN_VIDEO_SHIFT, H3_MAX_VIDEO_SHIFT);
+        exit(2);
+    }
+    return parsed;
+}
+
 static uint64_t parse_u64(const char *value, const char *label) {
     char *end = NULL;
     errno = 0;
@@ -147,6 +162,7 @@ static void print_info(const h3_ctx *ctx) {
     const h3_model_info *model = h3_model(ctx);
     printf("h3-metal %s\n", H3_VERSION);
     printf("events protocol: %d\n", H3_EVENTS_PROTOCOL);
+    printf("features: lora shift\n");
     printf("Device: %s (%s)\n", device->name, device->architecture);
     printf("  physical memory       %.1f GiB\n", gib(device->physical_memory));
     printf("  recommended GPU set   %.1f GiB\n", gib(device->recommended_working_set));
@@ -353,7 +369,8 @@ int main(int argc, char **argv) {
            OPT_REF_SILENT_VIDEO, OPT_REF_VIDEO_AUDIO,
            OPT_REF_AUDIO, OPT_FRAMES_DIR, OPT_PREVIEW_DIR, OPT_SHOW, OPT_ZOOM,
            OPT_PROFILE, OPT_INFO, OPT_LORA, OPT_NO_LORA, OPT_SETTINGS,
-           OPT_NO_TOKEN_REDUCTION, OPT_NO_SETTINGS, OPT_EVENTS_FD };
+           OPT_NO_TOKEN_REDUCTION, OPT_NO_SETTINGS, OPT_EVENTS_FD,
+           OPT_SHIFT };
     static const struct option options[] = {
         {"model-dir", required_argument, NULL, 'd'},
         {"prompt", required_argument, NULL, 'p'},
@@ -365,6 +382,7 @@ int main(int argc, char **argv) {
         {"frames", required_argument, NULL, OPT_FRAMES},
         {"seconds", required_argument, NULL, OPT_SECONDS},
         {"steps", required_argument, NULL, OPT_STEPS},
+        {"shift", required_argument, NULL, OPT_SHIFT},
         {"reuse", required_argument, NULL, OPT_REUSE},
         {"layers", required_argument, NULL, OPT_LAYERS},
         {"core-reuse", required_argument, NULL, OPT_CORE_REUSE},
@@ -509,6 +527,7 @@ int main(int argc, char **argv) {
                 seconds_given = 1;
                 break;
             case OPT_STEPS: params.steps = parse_int(optarg, "steps"); break;
+            case OPT_SHIFT: params.video_shift = parse_shift(optarg); break;
             case OPT_REUSE:
                 params.denoise_reuse = parse_int(optarg, "reuse");
                 break;

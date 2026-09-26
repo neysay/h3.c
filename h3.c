@@ -196,6 +196,11 @@ static void h3_report_loras(const h3_params *params,
     h3_log(H3_LOG_INFO, "h3: LoRA apply %.2f s\n", *apply_seconds);
 }
 
+static double h3_video_shift(const h3_params *params) {
+    return params->video_shift != 0.0 ? params->video_shift
+                                      : H3_DEFAULT_VIDEO_SHIFT;
+}
+
 static char *h3_prepared_key(const char *conditioning,
                              const h3_params *params,
                              int render_width, int render_height) {
@@ -220,6 +225,10 @@ static char *h3_prepared_key(const char *conditioning,
             params->use_slower_uncached_int8_scales,
             params->use_slower_dynamic_fc1_k,
             params->use_slower_grouped_quantizer)) {
+        free(key.text);
+        return NULL;
+    }
+    if (!h3_key_append(&key, "|shift=%.9g", h3_video_shift(params))) {
         free(key.text);
         return NULL;
     }
@@ -560,6 +569,13 @@ static int h3_valid_params(h3_ctx *ctx, const h3_params *params) {
     }
     if (params->steps < 2 || params->steps > H3_MAX_STEPS) {
         h3_set_error(ctx, "denoising steps must be in [2, 1000]");
+        return 0;
+    }
+    if (params->video_shift != 0.0 &&
+        !(params->video_shift >= H3_MIN_VIDEO_SHIFT &&
+          params->video_shift <= H3_MAX_VIDEO_SHIFT)) {
+        h3_set_error(ctx, "video sigma shift must be in [%g, %g]",
+                     H3_MIN_VIDEO_SHIFT, H3_MAX_VIDEO_SHIFT);
         return 0;
     }
     if (params->denoise_reuse < 1 || params->denoise_reuse > 3) {
@@ -1628,7 +1644,8 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
         goto cleanup;
     }
     h3_sigma_schedule sigmas;
-    if (!h3_serving_schedule_build(params->steps, &sigmas)) {
+    if (!h3_serving_schedule_build_shifted(params->steps,
+                                           h3_video_shift(params), &sigmas)) {
         h3_set_error(ctx, "cannot construct the requested sigma schedule");
         goto cleanup;
     }
@@ -1874,6 +1891,7 @@ h3_result *h3_generate(h3_ctx *ctx, const char *prompt,
     result->fps = H3_FPS;
     result->sample_rate = waveform.sample_rate;
     result->seed = params->seed;
+    result->video_shift = h3_video_shift(params);
     if (lora_report_count) {
         result->loras = malloc(lora_report_count * sizeof(*result->loras));
         if (!result->loras) {
